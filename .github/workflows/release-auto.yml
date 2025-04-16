@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Add permissions configuration
+permissions:
+  contents: write
+
 jobs:
   build-macos:
     runs-on: macos-latest
@@ -37,17 +41,11 @@ jobs:
         cd dist
         zip -r OSC_Relay_Client_macOS.zip OSC_Relay_Client_mac.app/
         
-    - name: Create Release
-      id: create_release
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v3
       with:
-        files: |
-          dist/OSC_Relay_Client_macOS.zip
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: OSC_Relay_Client_macOS
+        path: dist/OSC_Relay_Client_macOS.zip
         
   build-windows:
     runs-on: windows-latest
@@ -79,14 +77,50 @@ jobs:
         cd dist
         powershell Compress-Archive -Path OSC_Relay_Client.exe -DestinationPath OSC_Relay_Client_Windows.zip -Force
         
-    - name: Create Release
-      id: create_release
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v3
       with:
-        files: |
-          dist/OSC_Relay_Client_Windows.zip
+        name: OSC_Relay_Client_Windows
+        path: dist/OSC_Relay_Client_Windows.zip
+        
+  create-release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+        
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
         draft: false
         prerelease: false
+        
+    - name: Upload Release Assets
+      uses: actions/upload-release-asset@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create-release.outputs.upload_url }}
+        asset_path: ./artifacts/OSC_Relay_Client_macOS/OSC_Relay_Client_macOS.zip
+        asset_name: OSC_Relay_Client_macOS.zip
+        asset_content_type: application/zip
+        
+    - name: Upload Release Assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create-release.outputs.upload_url }}
+        asset_path: ./artifacts/OSC_Relay_Client_Windows/OSC_Relay_Client_Windows.zip
+        asset_name: OSC_Relay_Client_Windows.zip
+        asset_content_type: application/zip 
