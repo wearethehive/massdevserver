@@ -42,7 +42,7 @@ jobs:
         zip -r OSC_Relay_Client_macOS.zip OSC_Relay_Client_mac.app/
         
     - name: Upload macOS artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: OSC_Relay_Client_macOS
         path: dist/OSC_Relay_Client_macOS.zip
@@ -78,7 +78,7 @@ jobs:
         powershell Compress-Archive -Path OSC_Relay_Client.exe -DestinationPath OSC_Relay_Client_Windows.zip -Force
         
     - name: Upload Windows artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: OSC_Relay_Client_Windows
         path: dist/OSC_Relay_Client_Windows.zip
@@ -91,11 +91,12 @@ jobs:
       
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v2
       with:
         path: artifacts
         
     - name: Create Release
+      id: create_release
       uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,7 +111,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ steps.create-release.outputs.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./artifacts/OSC_Relay_Client_macOS/OSC_Relay_Client_macOS.zip
         asset_name: OSC_Relay_Client_macOS.zip
         asset_content_type: application/zip
@@ -120,7 +121,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ steps.create-release.outputs.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./artifacts/OSC_Relay_Client_Windows/OSC_Relay_Client_Windows.zip
         asset_name: OSC_Relay_Client_Windows.zip
         asset_content_type: application/zip 
