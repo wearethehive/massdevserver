@@ -1,0 +1,61 @@
+name: Build OSC Relay Client (Simple)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build macOS app
+      run: |
+        pyinstaller OSC_Relay_Client_mac.spec
+        
+    - name: List build artifacts
+      run: |
+        echo "Build artifacts:"
+        ls -la dist/
+        
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build Windows executable
+      run: |
+        pyinstaller OSC_Relay_Client.spec
+        
+    - name: List build artifacts
+      run: |
+        echo "Build artifacts:"
+        dir dist 
