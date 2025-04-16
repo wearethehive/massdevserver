@@ -80,4 +80,4 @@ jobs:
       with:
         name: OSC-Relay-Client-Windows
         path: dist/OSC_Relay_Client_Windows.zip
-        if-no-files-found: error 
+        if-no-files-found: error
