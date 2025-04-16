@@ -7,67 +7,64 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: read
+  actions: write
+
 jobs:
   build-macos:
     runs-on: macos-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyInstaller
-        pip install PySide6
-        pip install python-socketio
-        pip install python-engineio
-        pip install python-osc
-        pip install requests
+        pip install -r requirements.txt
         
     - name: Build macOS app
       run: |
         pyinstaller OSC_Relay_Client_mac.spec
         
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v4
       with:
         name: OSC-Relay-Client-macOS
-        path: dist/OSC_Relay_Client.app
+        path: dist/OSC_Relay_Client.app/
         if-no-files-found: error
         
   build-windows:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyInstaller
-        pip install PySide6
-        pip install python-socketio
-        pip install python-engineio
-        pip install python-osc
-        pip install requests
+        pip install -r requirements.txt
         
     - name: Build Windows executable
       run: |
         pyinstaller OSC_Relay_Client.spec
         
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
       with:
         name: OSC-Relay-Client-Windows
-        path: dist/OSC_Relay_Client.exe
+        path: dist/OSC_Relay_Client/
         if-no-files-found: error 
