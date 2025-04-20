@@ -758,11 +758,14 @@
                 destinations,
                 addresses,
                 interval_min: parseFloat(document.getElementById('intervalMin').value),
-                interval_max: parseFloat(document.getElementById('intervalMax').value)
+                interval_max: parseFloat(document.getElementById('intervalMax').value),
+                api_key: '{{ api_key|tojson|safe }}'
             });
         });
         document.getElementById('stopBtn').addEventListener('click', () => {
-            socket.emit('stop_sending');
+            socket.emit('stop_sending', {
+                api_key: '{{ api_key|tojson|safe }}'
+            });
         });
         document.getElementById('newAddressInput').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {

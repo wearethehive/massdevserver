@@ -19,11 +19,16 @@ from datetime import datetime
 import os
 import threading
 import socket
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Default configuration
-DEFAULT_SERVER_PORT = 80
+DEFAULT_SERVER_PORT = 7401
 DEFAULT_SERVER_URL = f'http://localhost:{DEFAULT_SERVER_PORT}'
 DEFAULT_LOCAL_PORT = 57120
+DEFAULT_API_KEY = os.environ.get('API_KEY', 'default-key-for-development')
 
 # Check for required packages
 try:
@@ -79,12 +84,13 @@ class OSCRelayClient(QObject):
     status_signal = Signal(str)
     message_signal = Signal(str)
 
-    def __init__(self, server_url, local_osc_ip=None, local_osc_port=None, name="OSC Relay Client"):
+    def __init__(self, server_url, local_osc_ip=None, local_osc_port=None, name="OSC Relay Client", api_key=DEFAULT_API_KEY):
         super().__init__()
         self.server_url = server_url
         self.local_osc_ip = local_osc_ip
         self.local_osc_port = local_osc_port
         self.name = name
+        self.api_key = api_key
         self.receiver_id = None
         self.osc_client = None
         self.was_manually_disconnected = False
@@ -101,6 +107,8 @@ class OSCRelayClient(QObject):
         self.sio.on('registration_confirmed', self.on_registration_confirmed)
         self.sio.on('relay_message', self.on_relay_message)
         self.sio.on('manual_disconnect', self.on_manual_disconnect)
+        self.sio.on('registration_failed', self.on_registration_failed)
+        self.sio.on('status_update', self.on_status_update)
         self.message_count = 0
         self.start_time = None
         self.running = False
@@ -126,7 +134,8 @@ class OSCRelayClient(QObject):
 
     def run(self):
         try:
-            self.sio.connect(self.server_url)
+            # Connect with API key in query parameters
+            self.sio.connect(self.server_url, auth={'api_key': self.api_key})
             logger.info(f"Connected to server: {self.server_url}")
             self.status_signal.emit(f"Connected to {self.server_url}")
             self.start_time = time.time()
@@ -141,7 +150,7 @@ class OSCRelayClient(QObject):
     def on_connect(self):
         logger.info("Connected to server, registering as receiver...")
         self.status_signal.emit("Connected, registering as receiver...")
-        self.sio.emit('register_receiver', {'name': self.name})
+        self.sio.emit('register_receiver', {'name': self.name, 'api_key': self.api_key})
 
     def on_disconnect(self):
         """Handle disconnection"""
@@ -161,6 +170,21 @@ class OSCRelayClient(QObject):
         self.receiver_id = data['receiver_id']
         logger.info(f"Registered as receiver: {self.name} (ID: {self.receiver_id})")
         self.status_signal.emit(f"Registered as receiver: {self.name}")
+
+    def on_registration_failed(self, data):
+        """Handle registration failure"""
+        error_msg = data.get('error', 'Unknown error')
+        logger.error(f"Registration failed: {error_msg}")
+        self.status_signal.emit(f"Registration failed: {error_msg}")
+        self.was_manually_disconnected = True
+        self.stop()
+
+    def on_status_update(self, data):
+        """Handle status updates from server"""
+        status = data.get('status', '')
+        message = data.get('message', '')
+        logger.info(f"Status update: {status} - {message}")
+        self.status_signal.emit(f"{status}: {message}")
 
     def on_relay_message(self, message):
         self.message_count += 1
@@ -244,13 +268,22 @@ if PySide6:
 
             # Server URL input with status indicator
             server_layout = QHBoxLayout()
-            server_layout.addWidget(QLabel('Dev Server URL:'))
+            server_layout.addWidget(QLabel('Server URL:'))
             self.server_input = QLineEdit(self.settings.value('server_url', DEFAULT_SERVER_URL))
-            self.server_input.setToolTip(f"The URL of the Mass Development Server (default port: {DEFAULT_SERVER_PORT})")
+            self.server_input.setToolTip(f"The URL of the OSC Relay Server (default port: {DEFAULT_SERVER_PORT})")
             server_layout.addWidget(self.server_input)
             self.status_indicator = StatusIndicator()
             server_layout.addWidget(self.status_indicator)
             layout.addLayout(server_layout)
+
+            # API Key input
+            api_key_layout = QHBoxLayout()
+            api_key_layout.addWidget(QLabel('API Key:'))
+            self.api_key_input = QLineEdit(self.settings.value('api_key', DEFAULT_API_KEY))
+            self.api_key_input.setToolTip("API key for authentication with the server")
+            self.api_key_input.setEchoMode(QLineEdit.Password)
+            api_key_layout.addWidget(self.api_key_input)
+            layout.addLayout(api_key_layout)
 
             # Name input
             name_layout = QHBoxLayout()
@@ -343,6 +376,7 @@ if PySide6:
         def save_settings(self):
             self.settings.setValue('geometry', self.geometry())
             self.settings.setValue('server_url', self.server_input.text())
+            self.settings.setValue('api_key', self.api_key_input.text())
             self.settings.setValue('client_name', self.name_input.text())
             self.settings.setValue('local_ip', self.local_ip_input.text())
             self.settings.setValue('local_port', self.local_port_input.text())
@@ -384,6 +418,7 @@ if PySide6:
 
         def start_client(self):
             server_url = self.server_input.text().strip()
+            api_key = self.api_key_input.text().strip() or DEFAULT_API_KEY
             name = self.name_input.text().strip() or 'OSC Relay Client'
             local_ip = self.local_ip_input.text().strip()
             local_port = self.local_port_input.text().strip()
@@ -397,7 +432,7 @@ if PySide6:
                 self.status_label.setText('Status: Invalid OSC port')
                 return
 
-            self.client = OSCRelayClient(server_url, local_ip, local_port_int, name)
+            self.client = OSCRelayClient(server_url, local_ip, local_port_int, name, api_key)
             self.client.status_signal.connect(self.update_status)
             self.client.message_signal.connect(self.add_message)
             self.client.start()
@@ -417,6 +452,7 @@ def main():
     parser = argparse.ArgumentParser(description='OSC Relay Client')
     parser.add_argument('--nogui', action='store_true', help='Run without GUI (CLI mode)')
     parser.add_argument('--server', default=DEFAULT_SERVER_URL, help='WebSocket server URL')
+    parser.add_argument('--api-key', default=DEFAULT_API_KEY, help='API key for authentication')
     parser.add_argument('--local-ip', default=None, help='Local OSC server IP to forward messages to')
     parser.add_argument('--local-port', type=int, default=None, help='Local OSC server port to forward messages to')
     parser.add_argument('--name', default=socket.gethostname(), help='Receiver name')
@@ -444,7 +480,8 @@ def main():
             args.server, 
             args.local_ip, 
             args.local_port, 
-            args.name
+            args.name,
+            args.api_key
         )
         client.status_signal.connect(lambda status: print(f"Status: {status}"))
         client.message_signal.connect(lambda msg: print(f"Message: {msg}"))

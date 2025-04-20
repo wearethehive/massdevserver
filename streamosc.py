@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from pythonosc import udp_client
 import random
@@ -7,13 +7,46 @@ import threading
 import json
 import uuid
 import logging
+import os
+from functools import wraps
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key'  # Change this to a secure secret key
-socketio = SocketIO(app, cors_allowed_origins="*")
+# Use environment variable for secret key
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
+
+# Configure CORS to only allow specific origins
+allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins)
+
+# Configure rate limiting
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # Configure logging
-logging.basicConfig(level=logging.WARNING)  # Set default level to WARNING
+log_level = os.environ.get('LOG_LEVEL', 'WARNING')
+log_file = os.environ.get('LOG_FILE', 'server.log')
+
+# Create logs directory if it doesn't exist
+if not os.path.exists('logs'):
+    os.makedirs('logs', exist_ok=True)
+
+logging.basicConfig(
+    level=getattr(logging, log_level),
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(log_file)
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Configure all relevant transport loggers
@@ -30,7 +63,7 @@ transport_loggers = [
 
 for logger_name in transport_loggers:
     log = logging.getLogger(logger_name)
-    log.setLevel(logging.WARNING)
+    log.setLevel(getattr(logging, log_level))
     log.propagate = False  # Prevent propagation to root logger
 
 # Global variables
@@ -79,7 +112,22 @@ connected_clients = set()
 # Relay service variables
 registered_receivers = {}  # Dictionary to store registered receivers
 message_queue = {}  # Dictionary to store messages for offline receivers
-MAX_QUEUE_SIZE = 100  # Maximum number of messages to queue per receiver
+MAX_QUEUE_SIZE = 100
+
+# API keys for client authentication
+API_KEYS = os.environ.get('API_KEYS', '').split(',')
+if not API_KEYS or API_KEYS[0] == '':
+    API_KEYS = ['default-key-for-development']
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = request.args.get('api_key') or request.json.get('api_key')
+        if not api_key or api_key not in API_KEYS:
+            logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated_function
 
 def send_random_osc_messages():
     clients = [udp_client.SimpleUDPClient(dest["ip"], dest["port"]) for dest in destinations]
@@ -123,76 +171,100 @@ def send_random_osc_messages():
 
 @app.route('/')
 def index():
+    # Get the first API key for the client
+    api_key = API_KEYS[0] if API_KEYS else 'default-key-for-development'
+    
     return render_template('index.html', 
-                         destinations=destinations,
-                         addresses=current_addresses,
-                         is_sending=is_sending,
-                         interval_min=interval_min,
-                         interval_max=interval_max)
+                          destinations=destinations,
+                          is_sending=is_sending,
+                          addresses=current_addresses,
+                          interval_min=interval_min,
+                          interval_max=interval_max,
+                          api_key=api_key)
+
+@app.route('/api/status')
+@limiter.limit("10 per minute")
+@require_api_key
+def get_status():
+    return jsonify({
+        'is_sending': is_sending,
+        'destinations': destinations,
+        'addresses': current_addresses,
+        'interval_min': interval_min,
+        'interval_max': interval_max,
+        'connected_clients': len(connected_clients),
+        'registered_receivers': len(registered_receivers)
+    })
+
+@app.route('/api/receivers')
+@limiter.limit("10 per minute")
+@require_api_key
+def get_receivers():
+    return jsonify({
+        'receivers': get_receivers_list()
+    })
+
+def get_receivers_list():
+    """Get a list of all registered receivers"""
+    receivers = []
+    for receiver_id, info in registered_receivers.items():
+        receivers.append({
+            'id': receiver_id,
+            'name': info.get('name', 'Unnamed'),
+            'active': info.get('active', False),
+            'created_at': info.get('created_at', 0)
+        })
+    return receivers
 
 @socketio.on('connect')
 def handle_connect():
-    """Handle new client connections"""
-    try:
-        connected_clients.add(request.sid)
-        # Send initial state to the connecting client
-        emit('status_update', {
-            'is_sending': is_sending,
-            'destinations': destinations,
-            'addresses': current_addresses,
-            'interval_min': interval_min,
-            'interval_max': interval_max
-        })
-        
-        # Send current receiver list
-        emit('receiver_list_updated', {
-            'receivers': get_receivers_list()
-        })
-        
-        logger.info(f"New client connected (sid: {request.sid})")
-    except Exception as e:
-        logger.error(f"Error handling new connection: {e}")
+    """Handle client connection"""
+    client_id = request.sid
+    connected_clients.add(client_id)
+    logger.info(f"Client connected: {client_id}")
+    emit('status_update', {
+        'status': 'connected',
+        'message': 'Connected to server',
+        'is_sending': is_sending
+    })
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    """Handle client disconnection and cleanup"""
-    try:
-        # Remove from connected clients
-        if request.sid in connected_clients:
-            connected_clients.remove(request.sid)
-        
-        # Find and cleanup any registered receiver
-        receiver_to_remove = None
-        for receiver_id, info in registered_receivers.items():
-            if info.get('socket_id') == request.sid:
-                receiver_to_remove = receiver_id
-                try:
-                    leave_room(receiver_id)
-                    logger.info(f"Receiver {info['name']} (ID: {receiver_id}) left room successfully")
-                except Exception as e:
-                    logger.error(f"Error leaving room for receiver {info['name']}: {e}")
-                break
-        
-        # Update receiver status or remove if found
-        if receiver_to_remove:
-            # Mark as inactive instead of removing
-            registered_receivers[receiver_to_remove]['active'] = False
+    """Handle client disconnection"""
+    client_id = request.sid
+    if client_id in connected_clients:
+        connected_clients.remove(client_id)
+    logger.info(f"Client disconnected: {client_id}")
+    
+    # Check if this client was a registered receiver
+    for receiver_id, info in list(registered_receivers.items()):
+        if info.get('socket_id') == client_id:
+            # Mark receiver as inactive
+            registered_receivers[receiver_id]['active'] = False
+            logger.info(f"Receiver {info.get('name')} (ID: {receiver_id}) marked as inactive")
             
-            # Notify other clients about the status change
+            # Notify all clients about the updated receiver list
             try:
                 emit('receiver_list_updated', {
                     'receivers': get_receivers_list()
                 }, broadcast=True)
-                logger.info(f"Receiver {registered_receivers[receiver_to_remove]['name']} marked as inactive")
             except Exception as e:
-                logger.error(f"Failed to broadcast receiver status update: {e}")
-                
-    except Exception as e:
-        logger.error(f"Error during disconnect handling: {e}")
+                logger.error(f"Failed to broadcast receiver list update: {e}")
 
 @socketio.on('start_sending')
+@limiter.limit("5 per minute")
 def handle_start_sending(data):
     global is_sending, send_thread, destinations, current_addresses, interval_min, interval_max
+    
+    # Validate API key
+    api_key = data.get('api_key')
+    if not api_key or api_key not in API_KEYS:
+        emit('status_update', {
+            'status': 'error',
+            'message': 'Unauthorized',
+            'is_sending': is_sending
+        })
+        return
     
     if not is_sending:
         # Update configuration from the request
@@ -220,8 +292,19 @@ def handle_start_sending(data):
         }, broadcast=True)
 
 @socketio.on('stop_sending')
-def handle_stop_sending():
+@limiter.limit("5 per minute")
+def handle_stop_sending(data):
     global is_sending, send_thread
+    
+    # Validate API key
+    api_key = data.get('api_key')
+    if not api_key or api_key not in API_KEYS:
+        emit('status_update', {
+            'status': 'error',
+            'message': 'Unauthorized',
+            'is_sending': is_sending
+        })
+        return
     
     if is_sending:
         is_sending = False
@@ -235,9 +318,18 @@ def handle_stop_sending():
 
 # Relay service handlers
 @socketio.on('register_receiver')
+@limiter.limit("10 per minute")
 def handle_register_receiver(data):
     """Register a client as an OSC message receiver"""
     try:
+        # Validate API key
+        api_key = data.get('api_key')
+        if not api_key or api_key not in API_KEYS:
+            emit('registration_failed', {
+                'error': 'Unauthorized'
+            })
+            return
+        
         receiver_name = data.get('name', 'Unnamed Receiver')
         receiver_id = str(uuid.uuid4())
         
@@ -277,81 +369,72 @@ def handle_register_receiver(data):
             except Exception as e:
                 logger.error(f"Failed to send queued messages to receiver {receiver_name}: {e}")
         
-        # Send confirmation to the receiver
-        try:
-            emit('registration_confirmed', {
-                'receiver_id': receiver_id,
-                'message': f'Successfully registered as "{receiver_name}"'
-            })
-        except Exception as e:
-            logger.error(f"Failed to send registration confirmation to receiver {receiver_name}: {e}")
-        
-        return {'receiver_id': receiver_id}
+        # Send confirmation to the client
+        emit('registration_confirmed', {
+            'receiver_id': receiver_id,
+            'message': f'Successfully registered as {receiver_name}'
+        })
         
     except Exception as e:
-        logger.error(f"Failed to register receiver: {e}")
-        emit('registration_error', {
-            'message': 'Failed to register receiver'
+        logger.error(f"Error registering receiver: {e}")
+        emit('registration_failed', {
+            'error': str(e)
         })
-        return {'error': str(e)}
 
 @socketio.on('unregister_receiver')
+@limiter.limit("10 per minute")
 def handle_unregister_receiver(data):
     """Unregister a client as an OSC message receiver"""
     try:
+        # Validate API key
+        api_key = data.get('api_key')
+        if not api_key or api_key not in API_KEYS:
+            emit('unregistration_failed', {
+                'error': 'Unauthorized'
+            })
+            return
+        
         receiver_id = data.get('receiver_id')
+        if not receiver_id or receiver_id not in registered_receivers:
+            emit('unregistration_failed', {
+                'error': 'Invalid receiver ID'
+            })
+            return
         
-        if receiver_id in registered_receivers:
-            receiver_name = registered_receivers[receiver_id]['name']
-            
-            try:
-                leave_room(receiver_id)
-                logger.info(f"Receiver {receiver_name} (ID: {receiver_id}) left room successfully")
-            except Exception as e:
-                logger.error(f"Error leaving room for receiver {receiver_name}: {e}")
-            
-            del registered_receivers[receiver_id]
-            if receiver_id in message_queue:
-                del message_queue[receiver_id]
-            
-            # Notify all clients about the removed receiver
-            try:
-                emit('receiver_list_updated', {
-                    'receivers': get_receivers_list()
-                }, broadcast=True)
-            except Exception as e:
-                logger.error(f"Failed to broadcast receiver list update: {e}")
-            
-            return {'success': True, 'message': 'Receiver unregistered successfully'}
+        # Remove the receiver
+        del registered_receivers[receiver_id]
         
-        return {'success': False, 'message': 'Receiver not found'}
+        # Leave the room
+        leave_room(receiver_id)
+        
+        # Notify all clients about the updated receiver list
+        emit('receiver_list_updated', {
+            'receivers': get_receivers_list()
+        }, broadcast=True)
+        
+        # Send confirmation to the client
+        emit('unregistration_confirmed', {
+            'message': 'Successfully unregistered'
+        })
         
     except Exception as e:
-        logger.error(f"Error during receiver unregistration: {e}")
-        return {'success': False, 'message': str(e)}
-
-@socketio.on('request_receiver_list')
-def handle_request_receiver_list():
-    """Send the current list of registered receivers to the client"""
-    emit('receiver_list_updated', {
-        'receivers': get_receivers_list()
-    })
-
-def get_receivers_list():
-    """Get a list of registered receivers for client display"""
-    return [
-        {
-            'id': receiver_id,
-            'name': info['name'],
-            'active': info['active'],
-            'created_at': info['created_at']
-        }
-        for receiver_id, info in registered_receivers.items()
-    ]
+        logger.error(f"Error unregistering receiver: {e}")
+        emit('unregistration_failed', {
+            'error': str(e)
+        })
 
 @socketio.on('send_value')
+@limiter.limit("30 per minute")
 def handle_send_value(data):
     """Handle manual message sending from the UI"""
+    # Validate API key
+    api_key = data.get('api_key')
+    if not api_key or api_key not in API_KEYS:
+        emit('send_failed', {
+            'error': 'Unauthorized'
+        })
+        return
+    
     address = data.get('address')
     value = data.get('value', 1.0)
     
@@ -383,46 +466,6 @@ def handle_send_value(data):
             if len(message_queue[receiver_id]) > MAX_QUEUE_SIZE:
                 message_queue[receiver_id].pop(0)
 
-@socketio.on('disconnect_receiver')
-def handle_disconnect_receiver(data):
-    """Manually disconnect a relay client"""
-    try:
-        receiver_id = data.get('receiver_id')
-        
-        if receiver_id in registered_receivers:
-            receiver_info = registered_receivers[receiver_id]
-            receiver_name = receiver_info['name']
-            socket_id = receiver_info['socket_id']
-            
-            try:
-                # Send manual disconnect event to the client
-                emit('manual_disconnect', {
-                    'message': 'Manually disconnected by server'
-                }, room=socket_id)
-                
-                # Disconnect the client's socket
-                socketio.close_room(receiver_id)
-                logger.info(f"Manually disconnected receiver {receiver_name} (ID: {receiver_id})")
-                
-                # Mark as inactive
-                registered_receivers[receiver_id]['active'] = False
-                
-                # Notify all clients about the status change
-                emit('receiver_list_updated', {
-                    'receivers': get_receivers_list()
-                }, broadcast=True)
-                
-                return {'success': True, 'message': f'Successfully disconnected {receiver_name}'}
-            except Exception as e:
-                logger.error(f"Error disconnecting receiver {receiver_name}: {e}")
-                return {'success': False, 'message': str(e)}
-        else:
-            return {'success': False, 'message': 'Receiver not found'}
-            
-    except Exception as e:
-        logger.error(f"Error during manual receiver disconnect: {e}")
-        return {'success': False, 'message': str(e)}
-
 @socketio.on('toggle_verbose_mode')
 def handle_toggle_verbose(data):
     """Handle verbose mode toggle from client"""
@@ -433,4 +476,10 @@ def handle_toggle_verbose(data):
     }, broadcast=True)
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=7401, debug=True)
+    # Use environment variables for host and port
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', 7401))
+    debug = os.environ.get('DEBUG', 'False').lower() == 'true'
+    
+    # Start the server without SSL (SSL will be handled by Nginx Proxy Manager)
+    socketio.run(app, host=host, port=port, debug=debug)
