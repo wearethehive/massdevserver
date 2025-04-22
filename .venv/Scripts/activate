@@ -38,7 +38,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="E:\The Hive Dropbox\Rich Porter\Stream_OSC\.venv"
+VIRTUAL_ENV="C:\StreamOSC\massdevserver\.venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

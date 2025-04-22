@@ -1,3 +1,4 @@
+# Test file for GUI functionality
 from PySide6.QtWidgets import QApplication, QMainWindow, QLabel
 import sys
 

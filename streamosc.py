@@ -12,9 +12,52 @@ from functools import wraps
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
+import sys
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Log basic startup information
+logger.info(f"Starting server process ID: {os.getpid()}")
 
 # Load environment variables
-load_dotenv()
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+logger.info(f"Loading environment variables from: {env_path}")
+load_dotenv(env_path)
+
+# Check if the .env file exists
+if os.path.exists(env_path):
+    logger.info("Environment file loaded successfully")
+else:
+    logger.error(f"Environment file not found at: {env_path}")
+
+# Log non-sensitive configuration
+logger.info(f"Server configured with:")
+logger.info(f"Host: {os.environ.get('HOST', '0.0.0.0')}")
+logger.info(f"Port: {os.environ.get('PORT', '7401')}")
+logger.info(f"Debug mode: {os.environ.get('DEBUG', 'False')}")
+logger.info(f"Log level: {os.environ.get('LOG_LEVEL', 'INFO')}")
+
+# Manually set the API_KEYS variable from the .env file
+if os.path.exists(env_path):
+    with open(env_path, 'r') as f:
+        for line in f:
+            if line.startswith('API_KEYS='):
+                api_key = line.strip().split('=', 1)[1]
+                os.environ['API_KEYS'] = api_key
+                logger.info("API keys loaded successfully")
+                break
+
+# Log the environment variables
+logger.info("Environment configuration loaded")
+
+# Check if API_KEYS is set in the system environment
+if 'API_KEYS' in os.environ:
+    logger.info("API keys configured")
+else:
+    logger.warning("No API keys configured")
 
 app = Flask(__name__)
 # Use environment variable for secret key
@@ -22,7 +65,7 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
 
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins)
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading')
 
 # Configure rate limiting
 limiter = Limiter(
@@ -118,12 +161,19 @@ MAX_QUEUE_SIZE = 100
 API_KEYS = os.environ.get('API_KEYS', '').split(',')
 if not API_KEYS or API_KEYS[0] == '':
     API_KEYS = ['default-key-for-development']
+logger.info(f"Server API keys: {API_KEYS}")
 
 def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = request.args.get('api_key') or request.json.get('api_key')
-        if not api_key or api_key not in API_KEYS:
+        
+        # If no API key is provided, use the default key
+        if not api_key:
+            api_key = 'default-key-for-development'
+            logger.debug("Using default API key")
+        
+        if api_key not in API_KEYS:
             logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
@@ -131,43 +181,49 @@ def require_api_key(f):
 
 def send_random_osc_messages():
     clients = [udp_client.SimpleUDPClient(dest["ip"], dest["port"]) for dest in destinations]
+    logger.info(f"Created OSC clients for destinations: {destinations}")
     
     while is_sending:
-        # Randomly select an OSC address from current_addresses
-        address = random.choice(current_addresses)
-        
-        # Generate a random value (between 0 and 1)
-        value = 1.0
-        
-        # Send the OSC message to all destinations
-        for client in clients:
-            client.send_message(address, value)
-        
-        # Notify connected clients about the message
-        message_data = {
-            'address': address,
-            'value': value,
-            'timestamp': time.time()
-        }
-        socketio.emit('osc_message', message_data)
-        
-        # Also send to registered relay receivers
-        for receiver_id, receiver_info in registered_receivers.items():
-            if receiver_info.get('active', False):
-                # Send directly to active receivers using their socket_id
-                socketio.emit('relay_message', message_data, room=receiver_info['socket_id'])
-            else:
-                # Queue message for offline receivers
-                if receiver_id not in message_queue:
-                    message_queue[receiver_id] = []
-                
-                # Add message to queue, maintaining max size
-                message_queue[receiver_id].append(message_data)
-                if len(message_queue[receiver_id]) > MAX_QUEUE_SIZE:
-                    message_queue[receiver_id].pop(0)  # Remove oldest message
-        
-        # Random delay between interval_min and interval_max seconds
-        time.sleep(random.uniform(interval_min, interval_max))
+        try:
+            # Randomly select an OSC address from current_addresses
+            address = random.choice(current_addresses)
+            
+            # Generate a random value (between 0 and 1)
+            value = 1.0
+            
+            # Send the OSC message to all destinations
+            for client in clients:
+                client.send_message(address, value)
+                logger.debug(f"Sent OSC message to {client._address}:{client._port} - {address}: {value}")
+            
+            # Notify connected clients about the message
+            message_data = {
+                'address': address,
+                'value': value,
+                'timestamp': time.time()
+            }
+            socketio.emit('osc_message', message_data)
+            
+            # Also send to registered relay receivers
+            for receiver_id, receiver_info in registered_receivers.items():
+                if receiver_info.get('active', False):
+                    # Send directly to active receivers using their socket_id
+                    socketio.emit('relay_message', message_data, room=receiver_info['socket_id'])
+                else:
+                    # Queue message for offline receivers
+                    if receiver_id not in message_queue:
+                        message_queue[receiver_id] = []
+                    
+                    # Add message to queue, maintaining max size
+                    message_queue[receiver_id].append(message_data)
+                    if len(message_queue[receiver_id]) > MAX_QUEUE_SIZE:
+                        message_queue[receiver_id].pop(0)  # Remove oldest message
+            
+            # Random delay between interval_min and interval_max seconds
+            time.sleep(random.uniform(interval_min, interval_max))
+        except Exception as e:
+            logger.error(f"Error in OSC message sending: {e}")
+            time.sleep(1)  # Wait a bit before retrying
 
 @app.route('/')
 def index():
@@ -222,11 +278,12 @@ def handle_connect():
     client_id = request.sid
     connected_clients.add(client_id)
     logger.info(f"Client connected: {client_id}")
+    logger.info(f"Total connected clients: {len(connected_clients)}")
     emit('status_update', {
         'status': 'connected',
         'message': 'Connected to server',
         'is_sending': is_sending
-    })
+    }, broadcast=True)
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -235,6 +292,7 @@ def handle_disconnect():
     if client_id in connected_clients:
         connected_clients.remove(client_id)
     logger.info(f"Client disconnected: {client_id}")
+    logger.info(f"Total connected clients: {len(connected_clients)}")
     
     # Check if this client was a registered receiver
     for receiver_id, info in list(registered_receivers.items()):
@@ -259,6 +317,7 @@ def handle_start_sending(data):
     # Validate API key
     api_key = data.get('api_key')
     if not api_key or api_key not in API_KEYS:
+        logger.warning("Unauthorized attempt to start sending")
         emit('status_update', {
             'status': 'error',
             'message': 'Unauthorized',
@@ -267,6 +326,7 @@ def handle_start_sending(data):
         return
     
     if not is_sending:
+        logger.info("Starting OSC message sending")
         # Update configuration from the request
         new_destinations = data.get('destinations', [])
         new_addresses = data.get('addresses', [])
@@ -275,21 +335,28 @@ def handle_start_sending(data):
         
         if new_destinations:
             destinations = new_destinations
+            logger.info(f"Updated destinations: {destinations}")
         if new_addresses:
             current_addresses = new_addresses
+            logger.info(f"Updated addresses: {current_addresses}")
         if new_interval_min is not None:
             interval_min = float(new_interval_min)
+            logger.info(f"Updated interval_min: {interval_min}")
         if new_interval_max is not None:
             interval_max = float(new_interval_max)
+            logger.info(f"Updated interval_max: {interval_max}")
         
         is_sending = True
         send_thread = threading.Thread(target=send_random_osc_messages)
         send_thread.start()
+        logger.info("OSC message sending thread started")
         emit('status_update', {
             'status': 'started',
             'message': 'OSC message sending started',
             'is_sending': True
         }, broadcast=True)
+    else:
+        logger.info("OSC message sending already in progress")
 
 @socketio.on('stop_sending')
 @limiter.limit("5 per minute")
@@ -299,6 +366,7 @@ def handle_stop_sending(data):
     # Validate API key
     api_key = data.get('api_key')
     if not api_key or api_key not in API_KEYS:
+        logger.warning("Unauthorized attempt to stop sending")
         emit('status_update', {
             'status': 'error',
             'message': 'Unauthorized',
@@ -307,14 +375,18 @@ def handle_stop_sending(data):
         return
     
     if is_sending:
+        logger.info("Stopping OSC message sending")
         is_sending = False
         if send_thread:
             send_thread.join()
+            logger.info("OSC message sending thread stopped")
         emit('status_update', {
             'status': 'stopped',
             'message': 'OSC message sending stopped',
             'is_sending': False
         }, broadcast=True)
+    else:
+        logger.info("OSC message sending already stopped")
 
 # Relay service handlers
 @socketio.on('register_receiver')
@@ -324,7 +396,15 @@ def handle_register_receiver(data):
     try:
         # Validate API key
         api_key = data.get('api_key')
-        if not api_key or api_key not in API_KEYS:
+        logger.info(f"Registration attempt with API key: {api_key}")
+        
+        # If no API key is provided, use the default key
+        if not api_key:
+            api_key = 'default-key-for-development'
+            logger.info(f"No API key provided for registration, using default: {api_key}")
+        
+        if api_key not in API_KEYS:
+            logger.warning(f"Registration failed: Unauthorized (API key: {api_key})")
             emit('registration_failed', {
                 'error': 'Unauthorized'
             })
@@ -475,6 +555,14 @@ def handle_toggle_verbose(data):
         'enabled': enabled
     }, broadcast=True)
 
+@app.route('/api/test_keys')
+def test_keys():
+    """Test endpoint to check API keys"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'API keys are configured'
+    })
+
 if __name__ == '__main__':
     # Use environment variables for host and port
     host = os.environ.get('HOST', '0.0.0.0')
@@ -482,4 +570,4 @@ if __name__ == '__main__':
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
     # Start the server without SSL (SSL will be handled by Nginx Proxy Manager)
-    socketio.run(app, host=host, port=port, debug=debug)
+    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)

@@ -759,12 +759,12 @@
                 addresses,
                 interval_min: parseFloat(document.getElementById('intervalMin').value),
                 interval_max: parseFloat(document.getElementById('intervalMax').value),
-                api_key: '{{ api_key|tojson|safe }}'
+                api_key: '{{ api_key }}'
             });
         });
         document.getElementById('stopBtn').addEventListener('click', () => {
             socket.emit('stop_sending', {
-                api_key: '{{ api_key|tojson|safe }}'
+                api_key: '{{ api_key }}'
             });
         });
         document.getElementById('newAddressInput').addEventListener('keypress', function (e) {

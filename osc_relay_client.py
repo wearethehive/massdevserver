@@ -28,7 +28,60 @@ load_dotenv()
 DEFAULT_SERVER_PORT = 7401
 DEFAULT_SERVER_URL = f'http://localhost:{DEFAULT_SERVER_PORT}'
 DEFAULT_LOCAL_PORT = 57120
-DEFAULT_API_KEY = os.environ.get('API_KEY', 'default-key-for-development')
+DEFAULT_API_KEY = os.environ.get('API_KEYS', 'default-key-for-development').split(',')[0]  # Take first key from comma-separated list
+
+# Configuration file path
+CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
+CONFIG_FILE = os.path.join(CONFIG_DIR, 'client_config.json')
+
+# Ensure config directory exists
+os.makedirs(CONFIG_DIR, exist_ok=True)
+
+# Default configuration
+DEFAULT_CONFIG = {
+    'server_url': DEFAULT_SERVER_URL,
+    'api_key': DEFAULT_API_KEY,
+    'client_name': socket.gethostname(),
+    'local_ip': '127.0.0.1',
+    'local_port': DEFAULT_LOCAL_PORT
+}
+
+def load_config():
+    """Load configuration from file"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                # Ensure all required keys exist
+                for key, value in DEFAULT_CONFIG.items():
+                    if key not in config:
+                        config[key] = value
+                logger.info(f"Loaded config from file: {config}")
+                return config
+        except Exception as e:
+            logger.error(f"Error loading config: {e}")
+    logger.info(f"Using default config: {DEFAULT_CONFIG}")
+    return DEFAULT_CONFIG.copy()
+
+def save_config(config):
+    """Save configuration to file"""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=4)
+        logger.info(f"Saved config to file: {config}")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving config: {e}")
+        return False
+
+def test_api_key():
+    """Test function to check the API key"""
+    config = load_config()
+    api_key = config.get('api_key', DEFAULT_API_KEY)
+    logger.info(f"Current API key: {api_key}")
+    logger.info(f"Default API key: {DEFAULT_API_KEY}")
+    logger.info(f"Environment API key: {os.environ.get('API_KEYS', 'Not set')}")
+    return api_key
 
 # Check for required packages
 try:
@@ -135,7 +188,15 @@ class OSCRelayClient(QObject):
     def run(self):
         try:
             # Connect with API key in query parameters
-            self.sio.connect(self.server_url, auth={'api_key': self.api_key})
+            logger.info(f"Connecting to server {self.server_url} with API key: {self.api_key}")
+            
+            # Only include API key in auth if it's not empty
+            auth_data = {}
+            if self.api_key and self.api_key.strip():
+                auth_data = {'api_key': self.api_key}
+            
+            logger.info(f"Auth data: {auth_data}")
+            self.sio.connect(self.server_url, auth=auth_data)
             logger.info(f"Connected to server: {self.server_url}")
             self.status_signal.emit(f"Connected to {self.server_url}")
             self.start_time = time.time()
@@ -150,7 +211,14 @@ class OSCRelayClient(QObject):
     def on_connect(self):
         logger.info("Connected to server, registering as receiver...")
         self.status_signal.emit("Connected, registering as receiver...")
-        self.sio.emit('register_receiver', {'name': self.name, 'api_key': self.api_key})
+        
+        # Only include API key in registration if it's not empty
+        registration_data = {'name': self.name}
+        if self.api_key and self.api_key.strip():
+            registration_data['api_key'] = self.api_key
+        
+        logger.info(f"Registration data: {registration_data}")
+        self.sio.emit('register_receiver', registration_data)
 
     def on_disconnect(self):
         """Handle disconnection"""
@@ -175,6 +243,7 @@ class OSCRelayClient(QObject):
         """Handle registration failure"""
         error_msg = data.get('error', 'Unknown error')
         logger.error(f"Registration failed: {error_msg}")
+        logger.error(f"Registration data: {data}")
         self.status_signal.emit(f"Registration failed: {error_msg}")
         self.was_manually_disconnected = True
         self.stop()
@@ -260,6 +329,7 @@ if PySide6:
             self.setMinimumWidth(600)
             self.client = None
             self.settings = QSettings('Mass Experience', 'OSC Relay Client')
+            self.config = load_config()  # Load configuration from file
             self.restore_settings()
             self.setup_ui()
 
@@ -269,7 +339,7 @@ if PySide6:
             # Server URL input with status indicator
             server_layout = QHBoxLayout()
             server_layout.addWidget(QLabel('Server URL:'))
-            self.server_input = QLineEdit(self.settings.value('server_url', DEFAULT_SERVER_URL))
+            self.server_input = QLineEdit(self.config.get('server_url', DEFAULT_SERVER_URL))
             self.server_input.setToolTip(f"The URL of the OSC Relay Server (default port: {DEFAULT_SERVER_PORT})")
             server_layout.addWidget(self.server_input)
             self.status_indicator = StatusIndicator()
@@ -279,16 +349,23 @@ if PySide6:
             # API Key input
             api_key_layout = QHBoxLayout()
             api_key_layout.addWidget(QLabel('API Key:'))
-            self.api_key_input = QLineEdit(self.settings.value('api_key', DEFAULT_API_KEY))
+            self.api_key_input = QLineEdit(self.config.get('api_key', DEFAULT_API_KEY))
             self.api_key_input.setToolTip("API key for authentication with the server")
             self.api_key_input.setEchoMode(QLineEdit.Password)
             api_key_layout.addWidget(self.api_key_input)
+            
+            # Add Test API Key button
+            test_api_btn = QPushButton("Test")
+            test_api_btn.setToolTip("Test the API key")
+            test_api_btn.clicked.connect(self.test_api_key)
+            api_key_layout.addWidget(test_api_btn)
+            
             layout.addLayout(api_key_layout)
 
             # Name input
             name_layout = QHBoxLayout()
             name_layout.addWidget(QLabel('Name:'))
-            self.name_input = QLineEdit(self.settings.value('client_name', socket.gethostname()))
+            self.name_input = QLineEdit(self.config.get('client_name', socket.gethostname()))
             self.name_input.setToolTip("A unique name to identify this client in the relay service")
             name_layout.addWidget(self.name_input)
             layout.addLayout(name_layout)
@@ -296,11 +373,11 @@ if PySide6:
             # Local OSC Device settings
             local_layout = QHBoxLayout()
             local_layout.addWidget(QLabel('Local OSC Device:'))
-            self.local_ip_input = QLineEdit(self.settings.value('local_ip', '127.0.0.1'))
+            self.local_ip_input = QLineEdit(self.config.get('local_ip', '127.0.0.1'))
             self.local_ip_input.setToolTip("IP address of the local device that will receive OSC messages")
             local_layout.addWidget(QLabel('IP:'))
             local_layout.addWidget(self.local_ip_input)
-            self.local_port_input = QLineEdit(self.settings.value('local_port', str(DEFAULT_LOCAL_PORT)))
+            self.local_port_input = QLineEdit(str(self.config.get('local_port', DEFAULT_LOCAL_PORT)))
             self.local_port_input.setToolTip("Port number of the local device that will receive OSC messages")
             local_layout.addWidget(QLabel('Port:'))
             local_layout.addWidget(self.local_port_input)
@@ -375,11 +452,16 @@ if PySide6:
 
         def save_settings(self):
             self.settings.setValue('geometry', self.geometry())
-            self.settings.setValue('server_url', self.server_input.text())
-            self.settings.setValue('api_key', self.api_key_input.text())
-            self.settings.setValue('client_name', self.name_input.text())
-            self.settings.setValue('local_ip', self.local_ip_input.text())
-            self.settings.setValue('local_port', self.local_port_input.text())
+            
+            # Update config with current values
+            self.config['server_url'] = self.server_input.text()
+            self.config['api_key'] = self.api_key_input.text()
+            self.config['client_name'] = self.name_input.text()
+            self.config['local_ip'] = self.local_ip_input.text()
+            self.config['local_port'] = int(self.local_port_input.text())
+            
+            # Save config to file
+            save_config(self.config)
 
         def closeEvent(self, event):
             self.save_settings()
@@ -423,6 +505,12 @@ if PySide6:
             local_ip = self.local_ip_input.text().strip()
             local_port = self.local_port_input.text().strip()
 
+            logger.info(f"Starting client with server_url: {server_url}")
+            logger.info(f"API key: {api_key}")
+            logger.info(f"Name: {name}")
+            logger.info(f"Local IP: {local_ip}")
+            logger.info(f"Local Port: {local_port}")
+
             if not server_url.startswith('http://') and not server_url.startswith('https://'):
                 server_url = 'http://' + server_url
 
@@ -448,19 +536,113 @@ if PySide6:
             self.stop_btn.setEnabled(False)
             self.status_label.setText('Status: Stopped')
 
+        def test_api_key(self):
+            """Test the API key"""
+            api_key = self.api_key_input.text().strip() or DEFAULT_API_KEY
+            server_url = self.server_input.text().strip()
+            
+            if not server_url.startswith('http://') and not server_url.startswith('https://'):
+                server_url = 'http://' + server_url
+            
+            # Test the API key by making a request to the server
+            try:
+                test_url = f"{server_url}/api/test_keys"
+                logger.info(f"Testing API key by making a request to {test_url}")
+                
+                # First, check what API keys the server has
+                response = requests.get(test_url)
+                if response.status_code == 200:
+                    server_keys = response.json()
+                    logger.info(f"Server API keys: {server_keys}")
+                    self.status_label.setText(f"Server API keys: {server_keys}")
+                else:
+                    logger.error(f"Failed to get server API keys: {response.status_code}")
+                    self.status_label.setText(f"Failed to get server API keys: {response.status_code}")
+                
+                # Now test the API key
+                test_url = f"{server_url}/api/status?api_key={api_key}"
+                logger.info(f"Testing API key by making a request to {test_url}")
+                response = requests.get(test_url)
+                
+                if response.status_code == 200:
+                    logger.info(f"API key is valid for HTTP: {api_key}")
+                    self.status_label.setText(f"API key is valid for HTTP: {api_key}")
+                else:
+                    logger.error(f"API key is invalid for HTTP: {api_key}, status code: {response.status_code}")
+                    self.status_label.setText(f"API key is invalid for HTTP: {api_key}, status code: {response.status_code}")
+                
+                # Test socket.io connection
+                self.test_socket_connection(server_url, api_key)
+            except Exception as e:
+                logger.error(f"Error testing API key: {e}")
+                self.status_label.setText(f"Error testing API key: {e}")
+        
+        def test_socket_connection(self, server_url, api_key):
+            """Test socket.io connection with API key"""
+            try:
+                sio = socketio.Client()
+                
+                # Set up event handlers
+                @sio.event
+                def connect():
+                    logger.info("Socket.io connected successfully")
+                    self.status_label.setText("Socket.io connected successfully")
+                    sio.disconnect()
+                
+                @sio.event
+                def connect_error(data):
+                    logger.error(f"Socket.io connection error: {data}")
+                    self.status_label.setText(f"Socket.io connection error: {data}")
+                
+                # Connect with API key
+                auth_data = {}
+                if api_key and api_key.strip():
+                    auth_data = {'api_key': api_key}
+                
+                logger.info(f"Testing socket.io connection with auth data: {auth_data}")
+                sio.connect(server_url, auth=auth_data)
+                
+                # Wait for connection or error
+                time.sleep(2)
+                
+                if sio.connected:
+                    logger.info("Socket.io connection test successful")
+                    self.status_label.setText("Socket.io connection test successful")
+                else:
+                    logger.error("Socket.io connection test failed")
+                    self.status_label.setText("Socket.io connection test failed")
+            except Exception as e:
+                logger.error(f"Error testing socket.io connection: {e}")
+                self.status_label.setText(f"Error testing socket.io connection: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description='OSC Relay Client')
     parser.add_argument('--nogui', action='store_true', help='Run without GUI (CLI mode)')
-    parser.add_argument('--server', default=DEFAULT_SERVER_URL, help='WebSocket server URL')
-    parser.add_argument('--api-key', default=DEFAULT_API_KEY, help='API key for authentication')
-    parser.add_argument('--local-ip', default=None, help='Local OSC server IP to forward messages to')
-    parser.add_argument('--local-port', type=int, default=None, help='Local OSC server port to forward messages to')
-    parser.add_argument('--name', default=socket.gethostname(), help='Receiver name')
+    parser.add_argument('--server', help='WebSocket server URL')
+    parser.add_argument('--api-key', help='API key for authentication')
+    parser.add_argument('--local-ip', help='Local OSC server IP to forward messages to')
+    parser.add_argument('--local-port', type=int, help='Local OSC server port to forward messages to')
+    parser.add_argument('--name', help='Receiver name')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
+
+    # Load configuration
+    config = load_config()
+    
+    # Override config with command line arguments if provided
+    if args.server:
+        config['server_url'] = args.server
+    if args.api_key:
+        config['api_key'] = args.api_key
+    if args.local_ip:
+        config['local_ip'] = args.local_ip
+    if args.local_port:
+        config['local_port'] = args.local_port
+    if args.name:
+        config['client_name'] = args.name
 
     if not args.nogui:
         if not PySide6:
@@ -472,16 +654,16 @@ def main():
         sys.exit(app.exec())
     else:
         # CLI mode
-        if (args.local_ip is None and args.local_port is not None) or \
-           (args.local_ip is not None and args.local_port is None):
+        if (config['local_ip'] is None and config['local_port'] is not None) or \
+           (config['local_ip'] is not None and config['local_port'] is None):
             logger.error("Both --local-ip and --local-port must be specified for forwarding")
             sys.exit(1)
         client = OSCRelayClient(
-            args.server, 
-            args.local_ip, 
-            args.local_port, 
-            args.name,
-            args.api_key
+            config['server_url'], 
+            config['local_ip'], 
+            config['local_port'], 
+            config['client_name'],
+            config['api_key']
         )
         client.status_signal.connect(lambda status: print(f"Status: {status}"))
         client.message_signal.connect(lambda msg: print(f"Message: {msg}"))
