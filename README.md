@@ -1,130 +1,102 @@
-# OSC Relay Server
+# Mass Development Server
 
-A secure WebSocket-based OSC relay server for production use.
+A web-based OSC message server for development and testing.
 
-## Security Features
+## Deployment Instructions
 
-- API key authentication for all endpoints
-- Rate limiting to prevent abuse
-- CORS protection with configurable allowed origins
-- SSL/TLS support for secure communication
-- Comprehensive logging
-- Environment-based configuration
-
-## Prerequisites
-
+### Prerequisites
 - Python 3.8 or higher
-- SSL certificates for HTTPS
-- A production web server (e.g., Nginx)
+- Nginx web server
+- Systemd (for service management)
 
-## Installation
+### Installation Steps
 
 1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd osc-relay-server
-   ```
+```bash
+git clone <repository-url>
+cd massdevserver
+```
 
-2. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
 3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-4. Configure environment variables:
-   - Copy `.env.example` to `.env`
-   - Update the values in `.env` with your production settings
-   - Generate a secure `SECRET_KEY`
-   - Add your API keys
-   - Configure SSL certificate paths
-   - Set allowed origins
+4. Create a `.env` file:
+```bash
+cp .env.example .env
+# Edit .env with your configuration
+```
 
-## Production Deployment
+5. Configure Nginx:
+Create a new file `/etc/nginx/sites-available/massdevserver`:
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
 
-1. Set up SSL certificates:
-   - Obtain SSL certificates from a trusted provider
-   - Place them in a secure location
-   - Update `SSL_CERT_PATH` and `SSL_KEY_PATH` in `.env`
-
-2. Configure Nginx as a reverse proxy:
-   ```nginx
-   server {
-       listen 443 ssl;
-       server_name your-domain.com;
-
-       ssl_certificate /path/to/certificate.pem;
-       ssl_certificate_key /path/to/private.key;
-
-       location / {
-           proxy_pass http://localhost:7401;
-           proxy_http_version 1.1;
-           proxy_set_header Upgrade $http_upgrade;
-           proxy_set_header Connection "upgrade";
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-       }
-   }
-   ```
-
-3. Start the server using Gunicorn:
-   ```bash
-   gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:7401 streamosc:app
-   ```
-
-4. Set up a process manager (e.g., systemd):
-   ```ini
-   [Unit]
-   Description=OSC Relay Server
-   After=network.target
-
-   [Service]
-   User=osc-relay
-   WorkingDirectory=/path/to/osc-relay-server
-   Environment="PATH=/path/to/osc-relay-server/venv/bin"
-   ExecStart=/path/to/osc-relay-server/venv/bin/gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:7401 streamosc:app
-   Restart=always
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-## Monitoring
-
-- Logs are written to the file specified in `LOG_FILE`
-- Set `LOG_LEVEL` to control verbosity
-- Monitor the logs for security events and errors
-
-## Security Best Practices
-
-1. Keep all dependencies updated
-2. Regularly rotate API keys
-3. Monitor logs for suspicious activity
-4. Use strong SSL certificates
-5. Implement proper firewall rules
-6. Regular security audits
-
-## Client Integration
-
-Clients must:
-1. Include an API key in all requests
-2. Connect using WSS (secure WebSocket)
-3. Handle rate limiting responses
-4. Implement proper error handling
-
-Example client connection:
-```javascript
-const socket = io('wss://your-domain.com', {
-    query: {
-        api_key: 'your-api-key'
+    location / {
+        proxy_pass http://127.0.0.1:7401;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
-});
+}
+```
+
+6. Enable the Nginx site:
+```bash
+sudo ln -s /etc/nginx/sites-available/massdevserver /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+7. Set up the systemd service:
+```bash
+# Edit the service file with your paths
+sudo cp massdevserver.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable massdevserver
+sudo systemctl start massdevserver
+```
+
+8. Set up SSL with Let's Encrypt:
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+```
+
+### Security Considerations
+
+1. Always use HTTPS in production
+2. Keep your API keys secure
+3. Regularly update dependencies
+4. Monitor server logs for issues
+5. Set up proper firewall rules
+
+### Maintenance
+
+- Check logs: `sudo journalctl -u massdevserver`
+- Restart service: `sudo systemctl restart massdevserver`
+- Update code: Pull latest changes and restart service
+
+## Development
+
+For local development:
+```bash
+python streamosc.py
 ```
 
 ## License
 
-[Your License] 
+[Your License Here] 

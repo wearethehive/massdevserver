@@ -1,0 +1,14 @@
+[Unit]
+Description=Mass Development Server
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/your/massdevserver
+Environment="PATH=/path/to/your/massdevserver/venv/bin"
+ExecStart=/path/to/your/massdevserver/venv/bin/gunicorn --worker-class eventlet -w 1 wsgi:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target 
