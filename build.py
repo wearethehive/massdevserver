@@ -76,6 +76,31 @@ def build_windows():
     print(f"Build complete! The application is in {exe_dir}")
     print(f"A zip file has been created at {zip_path}")
 
+def copy_to_clients_dir():
+    """Copy the built files to the clients directory with the correct names."""
+    print("Copying files to clients directory...")
+    
+    # Create clients directory if it doesn't exist
+    clients_dir = os.path.join(os.getcwd(), "clients")
+    if not os.path.exists(clients_dir):
+        os.makedirs(clients_dir)
+    
+    # Copy Windows client
+    if platform.system() == "Windows":
+        src = os.path.join(os.getcwd(), "dist", "OSC_Relay_Client_Windows.zip")
+        dst = os.path.join(clients_dir, "windows_client.zip")
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+            print(f"Copied Windows client to {dst}")
+    
+    # Copy macOS client
+    elif platform.system() == "Darwin":
+        src = os.path.join(os.getcwd(), "dist", "OSC_Relay_Client_macOS.zip")
+        dst = os.path.join(clients_dir, "mac_client.zip")
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+            print(f"Copied macOS client to {dst}")
+
 def main():
     """Main function."""
     print("Build script for OSC Relay Client")
@@ -98,6 +123,9 @@ def main():
         print(f"Unsupported operating system: {system}")
         print("This script only supports macOS and Windows.")
         sys.exit(1)
+    
+    # Copy files to clients directory
+    copy_to_clients_dir()
 
 if __name__ == "__main__":
     main() 
