@@ -31,6 +31,7 @@ logs/
 # Virtual Environment
 venv/
 ENV/
+new_venv/
 
 # IDE specific files
 .idea/
@@ -41,3 +42,5 @@ ENV/
 # OS specific files
 .DS_Store
 Thumbs.db .env
+
+.env
