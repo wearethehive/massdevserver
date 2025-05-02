@@ -147,6 +147,10 @@ class OSCRelayClient(QObject):
         self.receiver_id = None
         self.osc_client = None
         self.was_manually_disconnected = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay = 1  # Initial delay in seconds
+        self.max_reconnect_delay = 30  # Maximum delay in seconds
         if local_osc_ip and local_osc_port:
             try:
                 self.osc_client = udp_client.SimpleUDPClient(local_osc_ip, local_osc_port)
@@ -154,7 +158,8 @@ class OSCRelayClient(QObject):
             except Exception as e:
                 logger.error(f"Failed to create OSC client: {e}")
                 self.status_signal.emit(f"Failed to create OSC client: {e}")
-        self.sio = socketio.Client()
+        self.sio = socketio.Client(reconnection=True, reconnection_attempts=self.max_reconnect_attempts,
+                                 reconnection_delay=self.reconnect_delay, reconnection_delay_max=self.max_reconnect_delay)
         self.sio.on('connect', self.on_connect)
         self.sio.on('disconnect', self.on_disconnect)
         self.sio.on('registration_confirmed', self.on_registration_confirmed)
@@ -196,15 +201,29 @@ class OSCRelayClient(QObject):
                 auth_data = {'api_key': self.api_key}
             
             logger.info(f"Auth data: {auth_data}")
-            self.sio.connect(self.server_url, auth=auth_data)
+            self.sio.connect(self.server_url, auth=auth_data, wait_timeout=10)
             logger.info(f"Connected to server: {self.server_url}")
             self.status_signal.emit(f"Connected to {self.server_url}")
             self.start_time = time.time()
+            self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
             while self.running:
                 time.sleep(0.1)
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             self.status_signal.emit(f"Failed to connect: {e}")
+            if self.running and not self.was_manually_disconnected:
+                self.reconnect_attempts += 1
+                if self.reconnect_attempts <= self.max_reconnect_attempts:
+                    delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
+                    logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                    self.status_signal.emit(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                    time.sleep(delay)
+                    if self.running:
+                        self.run()
+                else:
+                    logger.error("Max reconnection attempts reached")
+                    self.status_signal.emit("Max reconnection attempts reached. Please check your connection and try again.")
+                    self.stop()
         finally:
             self.status_signal.emit("Stopped")
 

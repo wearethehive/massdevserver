@@ -74,7 +74,7 @@ cache = Cache(app)
 
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', ping_timeout=60, ping_interval=25)
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', ping_timeout=10, ping_interval=5)
 
 # Configure rate limiting
 limiter = Limiter(
@@ -297,38 +297,25 @@ def get_receivers_list():
 def handle_connect():
     """Handle client connection"""
     client_id = request.sid
-    connected_clients.add(client_id)
     logger.info(f"Client connected: {client_id}")
-    logger.info(f"Total connected clients: {len(connected_clients)}")
-    emit('status_update', {
-        'status': 'connected',
-        'message': 'Connected to server',
-        'is_sending': is_sending
-    }, broadcast=True)
+    connected_clients.add(client_id)
+    emit('status_update', {'status': 'connected', 'message': 'Connected to server'}, room=client_id)
+    # Broadcast updated client list to all connected clients
+    emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
     client_id = request.sid
-    if client_id in connected_clients:
-        connected_clients.remove(client_id)
     logger.info(f"Client disconnected: {client_id}")
-    logger.info(f"Total connected clients: {len(connected_clients)}")
-    
-    # Check if this client was a registered receiver
-    for receiver_id, info in list(registered_receivers.items()):
-        if info.get('socket_id') == client_id:
-            # Mark receiver as inactive
-            registered_receivers[receiver_id]['active'] = False
-            logger.info(f"Receiver {info.get('name')} (ID: {receiver_id}) marked as inactive")
-            
-            # Notify all clients about the updated receiver list
-            try:
-                emit('receiver_list_updated', {
-                    'receivers': get_receivers_list()
-                }, broadcast=True)
-            except Exception as e:
-                logger.error(f"Failed to broadcast receiver list update: {e}")
+    connected_clients.discard(client_id)
+    # Remove from registered receivers if needed
+    for receiver_id, receiver in list(registered_receivers.items()):
+        if receiver.get('client_id') == client_id:
+            del registered_receivers[receiver_id]
+            logger.info(f"Removed registered receiver: {receiver_id}")
+    # Broadcast updated client list to all connected clients
+    emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
 
 @socketio.on('start_sending')
 @limiter.limit("5 per minute")
@@ -413,74 +400,41 @@ def handle_stop_sending(data):
 @socketio.on('register_receiver')
 @limiter.limit("10 per minute")
 def handle_register_receiver(data):
-    """Register a client as an OSC message receiver"""
-    try:
-        # Validate API key
-        api_key = data.get('api_key')
-        logger.info(f"Registration attempt with API key: {api_key}")
-        
-        # If no API key is provided, use the default key
-        if not api_key:
-            api_key = 'default-key-for-development'
-            logger.info(f"No API key provided for registration, using default: {api_key}")
-        
-        if api_key not in API_KEYS:
-            logger.warning(f"Registration failed: Unauthorized (API key: {api_key})")
-            emit('registration_failed', {
-                'error': 'Unauthorized'
-            })
-            return
-        
-        receiver_name = data.get('name', 'Unnamed Receiver')
-        receiver_id = str(uuid.uuid4())
-        
-        registered_receivers[receiver_id] = {
-            'name': receiver_name,
-            'socket_id': request.sid,
-            'active': True,
-            'created_at': time.time()
-        }
-        
-        # Notify all clients about the new receiver immediately
-        try:
-            emit('receiver_list_updated', {
-                'receivers': get_receivers_list()
-            }, broadcast=True)
-        except Exception as e:
-            logger.error(f"Failed to broadcast receiver list update: {e}")
-        
-        # Join the socket to the receiver's room
-        try:
-            join_room(receiver_id)
-            logger.info(f"Receiver {receiver_name} (ID: {receiver_id}) joined room successfully")
-        except Exception as e:
-            logger.error(f"Failed to join room for receiver {receiver_name}: {e}")
-            # Clean up the registration if room joining fails
-            if receiver_id in registered_receivers:
-                del registered_receivers[receiver_id]
-            raise
-        
-        # Send queued messages if any
-        if receiver_id in message_queue and message_queue[receiver_id]:
-            try:
-                for message in message_queue[receiver_id]:
-                    emit('relay_message', message, room=request.sid)
-                # Clear queue after sending
-                message_queue[receiver_id] = []
-            except Exception as e:
-                logger.error(f"Failed to send queued messages to receiver {receiver_name}: {e}")
-        
-        # Send confirmation to the client
-        emit('registration_confirmed', {
-            'receiver_id': receiver_id,
-            'message': f'Successfully registered as {receiver_name}'
-        })
-        
-    except Exception as e:
-        logger.error(f"Error registering receiver: {e}")
-        emit('registration_failed', {
-            'error': str(e)
-        })
+    """Handle receiver registration"""
+    client_id = request.sid
+    name = data.get('name', 'Unnamed Receiver')
+    api_key = data.get('api_key', '')
+    
+    # Validate API key
+    if api_key not in API_KEYS:
+        logger.warning(f"Invalid API key from client {client_id}")
+        emit('registration_failed', {'error': 'Invalid API key'}, room=client_id)
+        return
+    
+    # Generate a unique receiver ID
+    receiver_id = str(uuid.uuid4())
+    
+    # Store receiver information
+    registered_receivers[receiver_id] = {
+        'name': name,
+        'client_id': client_id,
+        'api_key': api_key,
+        'connected_at': datetime.now().isoformat()
+    }
+    
+    logger.info(f"Registered receiver: {name} (ID: {receiver_id})")
+    
+    # Send confirmation to the registering client
+    emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
+    
+    # Broadcast updated receiver list to all connected clients
+    emit('receiver_list_update', {
+        'receivers': [{
+            'id': rid,
+            'name': r['name'],
+            'connected_at': r['connected_at']
+        } for rid, r in registered_receivers.items()]
+    }, broadcast=True)
 
 @socketio.on('unregister_receiver')
 @limiter.limit("10 per minute")
@@ -591,4 +545,4 @@ if __name__ == '__main__':
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
     # Start the server without SSL (SSL will be handled by Nginx Proxy Manager)
-    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
+    socketio.run(app, host=host, port=port, debug=debug, use_reloader=True)
