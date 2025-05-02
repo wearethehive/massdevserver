@@ -325,7 +325,7 @@ def get_receivers_list():
 connection_tracker = {}
 
 @socketio.on('connect')
-def handle_connect():
+def handle_connect(auth=None):
     """Handle client connection"""
     client_id = request.sid
     logger.info(f"Client connected: {client_id}")
@@ -353,7 +353,7 @@ def handle_connect():
     }, room=client_id)
     
     # Broadcast updated client list to all connected clients
-    socketio.emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+    socketio.emit('client_list_update', {'clients': list(connected_clients)}, namespace='/')
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -372,7 +372,7 @@ def handle_disconnect():
             del registered_receivers[receiver_id]
             logger.info(f"Removed registered receiver: {receiver_id}")
     # Broadcast updated client list to all connected clients
-    socketio.emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+    socketio.emit('client_list_update', {'clients': list(connected_clients)}, namespace='/')
 
 @socketio.on('ping')
 def handle_ping():
@@ -737,15 +737,15 @@ def check_connections():
                     logger.info(f"Removed stale receiver: {receiver_id}")
         
         if stale_clients:
-            # Use socketio.emit instead of emit to avoid request context issues
-            socketio.emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+            # Use socketio.emit with namespace instead of broadcast
+            socketio.emit('client_list_update', {'clients': list(connected_clients)}, namespace='/')
             socketio.emit('receiver_list_update', {
                 'receivers': [{
                     'id': rid,
                     'name': r['name'],
                     'connected_at': r['connected_at']
                 } for rid, r in registered_receivers.items()]
-            }, broadcast=True)
+            }, namespace='/')
     except Exception as e:
         logger.error(f"Error in connection check: {e}")
 
