@@ -245,6 +245,10 @@ def index():
     # Get the first API key for the client
     api_key = API_KEYS[0] if API_KEYS else 'default-key-for-development'
     
+    # Debug logging
+    logger.info(f"Rendering index with addresses: {OSC_ADDRESSES}")
+    logger.info(f"Number of addresses: {len(OSC_ADDRESSES)}")
+    
     return render_template('index.html', 
                           destinations=destinations,
                           is_sending=is_sending,
