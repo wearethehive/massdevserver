@@ -87,7 +87,8 @@ socketio = SocketIO(app,
                    max_http_buffer_size=1e8,  # Increased buffer size for proxied connections
                    allow_upgrades=True,  # Explicitly allow WebSocket upgrades
                    transports=['websocket', 'polling'],  # Specify allowed transports
-                   engineio_logger=True)  # Enable engine.io logging for debugging
+                   engineio_logger=True,  # Enable engine.io logging for debugging
+                   manage_session=False)  # Disable session management to prevent invalid session errors
 
 # Configure rate limiting
 limiter = Limiter(
@@ -338,7 +339,7 @@ def handle_connect():
     connected_clients.add(client_id)
     
     # Send initial status update
-    emit('status_update', {
+    socketio.emit('status_update', {
         'status': 'connected',
         'message': 'Connected to server',
         'is_sending': is_sending,
@@ -352,7 +353,7 @@ def handle_connect():
     }, room=client_id)
     
     # Broadcast updated client list to all connected clients
-    emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+    socketio.emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -371,7 +372,7 @@ def handle_disconnect():
             del registered_receivers[receiver_id]
             logger.info(f"Removed registered receiver: {receiver_id}")
     # Broadcast updated client list to all connected clients
-    emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+    socketio.emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
 
 @socketio.on('ping')
 def handle_ping():
@@ -720,7 +721,7 @@ def check_connections():
         stale_clients = []
         
         for client_id, info in connection_tracker.items():
-            if current_time - info['last_ping'] > 15:  # 15 seconds without ping
+            if current_time - info['last_ping'] > 30:  # Increased timeout to 30 seconds
                 stale_clients.append(client_id)
         
         for client_id in stale_clients:
@@ -736,8 +737,9 @@ def check_connections():
                     logger.info(f"Removed stale receiver: {receiver_id}")
         
         if stale_clients:
-            emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
-            emit('receiver_list_update', {
+            # Use socketio.emit instead of emit to avoid request context issues
+            socketio.emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+            socketio.emit('receiver_list_update', {
                 'receivers': [{
                     'id': rid,
                     'name': r['name'],
