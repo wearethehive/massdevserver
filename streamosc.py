@@ -75,7 +75,7 @@ cache = Cache(app)
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
 socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', 
-                   ping_timeout=10, ping_interval=5, max_http_buffer_size=1e8)
+                   ping_timeout=10, ping_interval=5)
 
 # Configure rate limiting
 limiter = Limiter(
@@ -608,34 +608,37 @@ def test_keys():
 # Add periodic connection check
 def check_connections():
     """Periodically check and clean up stale connections"""
-    current_time = time.time()
-    stale_clients = []
-    
-    for client_id, info in connection_tracker.items():
-        if current_time - info['last_ping'] > 15:  # 15 seconds without ping
-            stale_clients.append(client_id)
-    
-    for client_id in stale_clients:
-        logger.warning(f"Client {client_id} is stale, removing")
-        if client_id in connected_clients:
-            connected_clients.remove(client_id)
-        if client_id in connection_tracker:
-            del connection_tracker[client_id]
-        # Remove from registered receivers if needed
-        for receiver_id, receiver in list(registered_receivers.items()):
-            if receiver.get('client_id') == client_id:
-                del registered_receivers[receiver_id]
-                logger.info(f"Removed stale receiver: {receiver_id}")
-    
-    if stale_clients:
-        emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
-        emit('receiver_list_update', {
-            'receivers': [{
-                'id': rid,
-                'name': r['name'],
-                'connected_at': r['connected_at']
-            } for rid, r in registered_receivers.items()]
-        }, broadcast=True)
+    try:
+        current_time = time.time()
+        stale_clients = []
+        
+        for client_id, info in connection_tracker.items():
+            if current_time - info['last_ping'] > 15:  # 15 seconds without ping
+                stale_clients.append(client_id)
+        
+        for client_id in stale_clients:
+            logger.warning(f"Client {client_id} is stale, removing")
+            if client_id in connected_clients:
+                connected_clients.remove(client_id)
+            if client_id in connection_tracker:
+                del connection_tracker[client_id]
+            # Remove from registered receivers if needed
+            for receiver_id, receiver in list(registered_receivers.items()):
+                if receiver.get('client_id') == client_id:
+                    del registered_receivers[receiver_id]
+                    logger.info(f"Removed stale receiver: {receiver_id}")
+        
+        if stale_clients:
+            emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+            emit('receiver_list_update', {
+                'receivers': [{
+                    'id': rid,
+                    'name': r['name'],
+                    'connected_at': r['connected_at']
+                } for rid, r in registered_receivers.items()]
+            }, broadcast=True)
+    except Exception as e:
+        logger.error(f"Error in connection check: {e}")
 
 # Start the connection check thread
 connection_check_thread = threading.Thread(target=lambda: 
