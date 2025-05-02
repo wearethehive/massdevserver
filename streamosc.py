@@ -248,7 +248,7 @@ def index():
     return render_template('index.html', 
                           destinations=destinations,
                           is_sending=is_sending,
-                          addresses=current_addresses,
+                          addresses=OSC_ADDRESSES,  # Use the default OSC addresses
                           interval_min=interval_min,
                           interval_max=interval_max,
                           api_key=api_key)
