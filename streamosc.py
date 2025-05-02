@@ -1,3 +1,7 @@
+# Import eventlet and monkey patch first
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask, jsonify, render_template, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from pythonosc import udp_client
