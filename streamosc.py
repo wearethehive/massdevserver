@@ -644,9 +644,14 @@ def check_connections():
     except Exception as e:
         logger.error(f"Error in connection check: {e}")
 
+def connection_check_loop():
+    """Infinite loop for connection checking"""
+    while True:
+        time.sleep(5)
+        check_connections()
+
 # Start the connection check thread
-connection_check_thread = threading.Thread(target=lambda: 
-    [time.sleep(5), check_connections() for _ in iter(int, 1)], daemon=True)
+connection_check_thread = threading.Thread(target=connection_check_loop, daemon=True)
 connection_check_thread.start()
 
 if __name__ == '__main__':
