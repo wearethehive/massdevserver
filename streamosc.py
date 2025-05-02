@@ -22,7 +22,7 @@ from flask_caching import Cache
 import io
 
 # Configure logging - reduce logging overhead in production
-log_level = os.environ.get('LOG_LEVEL', 'WARNING')
+log_level = os.environ.get('LOG_LEVEL', 'INFO')  # Changed default to INFO
 logging.basicConfig(level=getattr(logging, log_level), format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -103,11 +103,11 @@ if not os.path.exists(log_dir):
 
 log_file = os.path.join(log_dir, 'server.log')
 
-# Configure file logging only if needed
-if log_level == 'DEBUG':
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
-    logger.addHandler(file_handler)
+# Configure file logging
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(getattr(logging, log_level))
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
 
 # Configure all relevant transport loggers
 transport_loggers = [
@@ -125,6 +125,7 @@ for logger_name in transport_loggers:
     log = logging.getLogger(logger_name)
     log.setLevel(getattr(logging, log_level))
     log.propagate = False  # Prevent propagation to root logger
+    log.addHandler(file_handler)  # Add file handler to all transport loggers
 
 # Global variables
 verbose_mode = False  # Add verbose mode flag
@@ -553,6 +554,8 @@ def handle_register_receiver(data):
     client_id = request.sid
     name = data.get('name', 'Unnamed Receiver')
     api_key = data.get('api_key', '')
+    
+    logger.info(f"Registration attempt from client {client_id} with name {name}")
     
     # Validate API key
     if api_key not in API_KEYS:
