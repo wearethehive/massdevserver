@@ -1052,7 +1052,11 @@
                 interval_max: parseFloat(document.getElementById('intervalMax').value)
             };
 
-            socket.emit('start_sending', data);
+            socket.emit('start_sending', data, (response) => {
+                if (response && response.error) {
+                    alert(`Failed to start sending: ${response.error}`);
+                }
+            });
         }
 
         function stopSending() {
@@ -1074,7 +1078,11 @@
                 receiver_id: receiverId
             };
 
-            socket.emit('stop_sending', data);
+            socket.emit('stop_sending', data, (response) => {
+                if (response && response.error) {
+                    alert(`Failed to stop sending: ${response.error}`);
+                }
+            });
         }
     </script>
 </body>
