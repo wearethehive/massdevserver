@@ -328,7 +328,16 @@ connection_tracker = {}
 def handle_connect(auth=None):
     """Handle client connection"""
     client_id = request.sid
-    logger.info(f"Client connected: {client_id}")
+    logger.info(f"New connection attempt from client: {client_id}")
+    logger.info(f"Auth data received: {auth}")
+    
+    # Validate API key if provided
+    if auth and 'api_key' in auth:
+        api_key = auth['api_key']
+        if api_key not in API_KEYS:
+            logger.warning(f"Invalid API key from client {client_id}")
+            return False  # Reject connection
+        logger.info(f"Valid API key from client {client_id}")
     
     # Track connection time
     connection_tracker[client_id] = {
@@ -337,23 +346,34 @@ def handle_connect(auth=None):
     }
     
     connected_clients.add(client_id)
+    logger.info(f"Current connected clients: {list(connected_clients)}")
     
     # Send initial status update
-    socketio.emit('status_update', {
-        'status': 'connected',
-        'message': 'Connected to server',
-        'is_sending': is_sending,
-        'destinations': destinations,
-        'addresses': current_addresses,
-        'receivers': [{
-            'id': rid,
-            'name': r['name'],
-            'connected_at': r['connected_at']
-        } for rid, r in registered_receivers.items()]
-    }, room=client_id)
+    try:
+        socketio.emit('status_update', {
+            'status': 'connected',
+            'message': 'Connected to server',
+            'is_sending': is_sending,
+            'destinations': destinations,
+            'addresses': current_addresses,
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
+        }, room=client_id)
+        logger.info(f"Sent initial status update to client {client_id}")
+    except Exception as e:
+        logger.error(f"Error sending status update to client {client_id}: {e}")
     
     # Broadcast updated client list to all connected clients
-    socketio.emit('client_list_update', {'clients': list(connected_clients)}, namespace='/')
+    try:
+        socketio.emit('client_list_update', {'clients': list(connected_clients)}, namespace='/')
+        logger.info(f"Broadcasted client list update: {list(connected_clients)}")
+    except Exception as e:
+        logger.error(f"Error broadcasting client list update: {e}")
+    
+    return True
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -557,17 +577,18 @@ def handle_register_receiver(data):
     api_key = data.get('api_key', '')
     
     logger.info(f"Registration attempt from client {client_id} with name {name}")
+    logger.info(f"Registration data: {data}")
     
     # Validate API key
     if api_key not in API_KEYS:
         logger.warning(f"Invalid API key from client {client_id}")
-        emit('registration_failed', {'error': 'Invalid API key'}, room=client_id)
+        socketio.emit('registration_failed', {'error': 'Invalid API key'}, room=client_id)
         return
     
     # Check if client is still connected
     if client_id not in connection_tracker:
         logger.warning(f"Client {client_id} not found in connection tracker")
-        emit('registration_failed', {'error': 'Connection lost'}, room=client_id)
+        socketio.emit('registration_failed', {'error': 'Connection lost'}, room=client_id)
         return
     
     # Generate a unique receiver ID
@@ -584,32 +605,45 @@ def handle_register_receiver(data):
     }
     
     logger.info(f"Registered receiver: {name} (ID: {receiver_id})")
+    logger.info(f"Current registered receivers: {list(registered_receivers.keys())}")
     
     # Send confirmation to the registering client
-    emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
+    try:
+        socketio.emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
+        logger.info(f"Sent registration confirmation to client {client_id}")
+    except Exception as e:
+        logger.error(f"Error sending registration confirmation: {e}")
     
     # Send updated status to all clients
-    emit('status_update', {
-        'status': 'connected',
-        'message': 'Connected to server',
-        'is_sending': is_sending,
-        'destinations': destinations,
-        'addresses': current_addresses,
-        'receivers': [{
-            'id': rid,
-            'name': r['name'],
-            'connected_at': r['connected_at']
-        } for rid, r in registered_receivers.items()]
-    }, broadcast=True)
+    try:
+        socketio.emit('status_update', {
+            'status': 'connected',
+            'message': 'Connected to server',
+            'is_sending': is_sending,
+            'destinations': destinations,
+            'addresses': current_addresses,
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
+        }, broadcast=True)
+        logger.info("Broadcasted status update to all clients")
+    except Exception as e:
+        logger.error(f"Error broadcasting status update: {e}")
     
     # Broadcast updated receiver list to all connected clients
-    emit('receiver_list_update', {
-        'receivers': [{
-            'id': rid,
-            'name': r['name'],
-            'connected_at': r['connected_at']
-        } for rid, r in registered_receivers.items()]
-    }, broadcast=True)
+    try:
+        socketio.emit('receiver_list_update', {
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
+        }, broadcast=True)
+        logger.info("Broadcasted receiver list update to all clients")
+    except Exception as e:
+        logger.error(f"Error broadcasting receiver list update: {e}")
 
 @socketio.on('unregister_receiver')
 @limiter.limit("10 per minute")
