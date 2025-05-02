@@ -74,7 +74,7 @@ cache = Cache(app)
 
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', 
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='eventlet',
                    ping_timeout=10, ping_interval=5)
 
 # Configure rate limiting
