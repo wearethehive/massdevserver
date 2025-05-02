@@ -128,6 +128,7 @@ for logger_name in transport_loggers:
 
 # Global variables
 verbose_mode = False  # Add verbose mode flag
+background_tasks = []  # Initialize background tasks list
 
 def set_verbose_mode(enabled):
     """Toggle verbose logging mode"""
@@ -842,8 +843,13 @@ def cleanup_old_logs():
     except Exception as e:
         logger.error(f"Error cleaning up logs: {e}")
 
-# Add to the existing background tasks
+# Add cleanup task to background tasks
 background_tasks.append(cleanup_old_logs)
+
+# Start background tasks
+for task in background_tasks:
+    task_thread = threading.Thread(target=task, daemon=True)
+    task_thread.start()
 
 if __name__ == '__main__':
     # Use environment variables for host and port
