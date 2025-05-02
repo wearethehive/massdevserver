@@ -17,8 +17,9 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask_caching import Cache
+import io
 
 # Configure logging - reduce logging overhead in production
 log_level = os.environ.get('LOG_LEVEL', 'WARNING')
@@ -749,6 +750,61 @@ def fix_proxy():
         request.environ['REMOTE_ADDR'] = request.headers['X-Forwarded-For'].split(',')[0]
     if 'X-Forwarded-Proto' in request.headers:
         request.environ['wsgi.url_scheme'] = request.headers['X-Forwarded-Proto']
+
+@app.route('/logs')
+@require_api_key
+def view_logs():
+    """View server logs in real-time"""
+    return render_template('logs.html', api_key=request.args.get('api_key'))
+
+@app.route('/api/logs')
+@require_api_key
+def get_logs():
+    """Get recent server logs"""
+    # Get logs from the last 5 minutes
+    cutoff_time = datetime.now() - timedelta(minutes=5)
+    log_entries = []
+    
+    # Get all log handlers
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            try:
+                with open(handler.baseFilename, 'r') as f:
+                    for line in f:
+                        # Parse timestamp from log line
+                        try:
+                            timestamp_str = line.split(' - ')[0]
+                            timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
+                            if timestamp > cutoff_time:
+                                log_entries.append(line.strip())
+                        except:
+                            # If we can't parse the timestamp, include the line anyway
+                            log_entries.append(line.strip())
+            except Exception as e:
+                logger.error(f"Error reading log file: {e}")
+    
+    # Return the most recent 100 lines
+    return jsonify({'logs': log_entries[-100:]})
+
+# Add periodic log cleanup
+def cleanup_old_logs():
+    """Clean up log files older than 7 days"""
+    try:
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+        current_time = time.time()
+        
+        for filename in os.listdir(log_dir):
+            if filename.endswith('.log'):
+                filepath = os.path.join(log_dir, filename)
+                file_time = os.path.getmtime(filepath)
+                if current_time - file_time > 7 * 24 * 60 * 60:  # 7 days
+                    os.remove(filepath)
+                    logger.info(f"Removed old log file: {filename}")
+    except Exception as e:
+        logger.error(f"Error cleaning up logs: {e}")
+
+# Add to the existing background tasks
+background_tasks.append(cleanup_old_logs)
 
 if __name__ == '__main__':
     # Use environment variables for host and port

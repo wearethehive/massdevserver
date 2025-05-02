@@ -156,6 +156,8 @@ class OSCRelayClient(QObject):
         self.running = False  # Add flag to track if client is running
         self.thread = None
         self.signal_lock = threading.Lock()  # Add lock for signal handling
+        self.receivers = []
+        self.is_sending = False
         
         if local_osc_ip and local_osc_port:
             try:
@@ -275,20 +277,23 @@ class OSCRelayClient(QObject):
             self.safe_emit_status("Stopped")
 
     def on_connect(self):
-        """Handle successful connection"""
+        """Handle successful connection to the server."""
         logger.info("Connected to server, registering as receiver...")
-        self.safe_emit_status("Connected, registering as receiver...")
         
-        # Only include API key in registration if it's not empty
-        registration_data = {'name': self.name}
-        if self.api_key and self.api_key.strip():
-            registration_data['api_key'] = self.api_key
-        
+        if not self.sio.connected:
+            logger.warning("Cannot register: Not connected to server")
+            return
+            
+        registration_data = {
+            'name': self.name,
+            'api_key': self.api_key
+        }
         logger.info(f"Registration data: {registration_data}")
-        self.sio.emit('register_receiver', registration_data)
         
-        # Request current status from server
-        self.sio.emit('get_status', {'api_key': self.api_key})
+        try:
+            self.sio.emit('register_receiver', registration_data)
+        except Exception as e:
+            logger.error(f"Failed to send registration: {str(e)}")
 
     def on_disconnect(self):
         """Handle disconnection"""
@@ -310,11 +315,19 @@ class OSCRelayClient(QObject):
         logger.info(f"Registered as receiver: {self.name} (ID: {self.receiver_id})")
         self.safe_emit_status(f"Registered as receiver: {self.name}")
         
-        # Request current status from server after registration
-        self.sio.emit('get_status', {'api_key': self.api_key})
+        # Join the receiver's room first
+        try:
+            self.sio.emit('join', {'room': self.receiver_id})
+            logger.info(f"Joined room {self.receiver_id}")
+        except Exception as e:
+            logger.error(f"Failed to join room: {e}")
         
-        # Join the receiver's room
-        self.sio.emit('join', {'room': self.receiver_id})
+        # Request current status from server after registration
+        try:
+            self.sio.emit('get_status', {'api_key': self.api_key})
+            logger.info("Requested status update from server")
+        except Exception as e:
+            logger.error(f"Failed to request status: {e}")
 
     def on_registration_failed(self, data):
         """Handle registration failure"""
@@ -326,25 +339,26 @@ class OSCRelayClient(QObject):
         self.stop()
 
     def on_status_update(self, data):
-        """Handle status updates from server"""
-        status = data.get('status', '')
-        message = data.get('message', '')
-        is_sending = data.get('is_sending', False)
-        receivers = data.get('receivers', [])
+        """Handle status updates from the server."""
+        logger.info(f"Status update: {data.get('status', 'unknown')} - {data.get('message', 'No message')}")
         
-        logger.info(f"Status update: {status} - {message}")
-        logger.info(f"Receivers: {receivers}")
-        logger.info(f"Is sending: {is_sending}")
-        
-        # Update status signal with more detailed information
-        self.safe_emit_status(f"{status}: {message}")
-        
-        # If we're registered, check if we're in the receivers list
-        if self.receiver_id:
-            is_registered = any(r['id'] == self.receiver_id for r in receivers)
-            if is_registered:
-                logger.info("This client is in the receivers list")
-            else:
+        # Update receivers list
+        if 'receivers' in data:
+            self.receivers = data['receivers']
+            logger.info(f"Receivers: {self.receivers}")
+            logger.info(f"Receiver list updated: {self.receivers}")
+            
+        # Update sending state
+        if 'is_sending' in data:
+            self.is_sending = data['is_sending']
+            logger.info(f"Is sending: {self.is_sending}")
+            
+        # Check if we're still in the receivers list
+        if self.receiver_id and self.receivers:
+            is_in_list = any(r['id'] == self.receiver_id for r in self.receivers)
+            logger.info(f"This client is in the receivers list" if is_in_list else "This client is not in the receivers list")
+            
+            if not is_in_list and self.sio.connected:
                 logger.warning("This client is not in the receivers list, re-registering...")
                 self.on_connect()  # Re-register if we're not in the list
 
