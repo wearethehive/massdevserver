@@ -651,7 +651,28 @@ if PySide6:
                 self.status_label.setText('Status: Invalid OSC port')
                 return
 
-            self.client = OSCRelayClient(server_url, local_ip, local_port_int, name, api_key)
+            # Create config dictionary
+            config = {
+                'server_url': server_url,
+                'api_key': api_key,
+                'receiver_name': name,
+                'local_ip': local_ip,
+                'local_port': local_port_int
+            }
+
+            # Save config to file
+            config_path = os.path.join(CONFIG_DIR, 'client_config.json')
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=4)
+                logger.info(f"Saved config to {config_path}")
+            except Exception as e:
+                logger.error(f"Error saving config: {e}")
+                self.status_label.setText(f'Status: Error saving config - {str(e)}')
+                return
+
+            # Initialize client with config file
+            self.client = OSCRelayClient(config_path)
             self.client.status_signal.connect(self.update_status)
             self.client.message_signal.connect(self.add_message)
             self.client.start()
@@ -760,20 +781,24 @@ def main():
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    # Load configuration
-    config = load_config()
-    
-    # Override config with command line arguments if provided
-    if args.server:
-        config['server_url'] = args.server
-    if args.api_key:
-        config['api_key'] = args.api_key
-    if args.local_ip:
-        config['local_ip'] = args.local_ip
-    if args.local_port:
-        config['local_port'] = args.local_port
-    if args.name:
-        config['client_name'] = args.name
+    # Create config dictionary
+    config = {
+        'server_url': args.server or DEFAULT_SERVER_URL,
+        'api_key': args.api_key or DEFAULT_API_KEY,
+        'receiver_name': args.name or socket.gethostname(),
+        'local_ip': args.local_ip or '127.0.0.1',
+        'local_port': args.local_port or DEFAULT_LOCAL_PORT
+    }
+
+    # Save config to file
+    config_path = os.path.join(CONFIG_DIR, 'client_config.json')
+    try:
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=4)
+        logger.info(f"Saved config to {config_path}")
+    except Exception as e:
+        logger.error(f"Error saving config: {e}")
+        sys.exit(1)
 
     if not args.nogui:
         if not PySide6:
@@ -789,13 +814,7 @@ def main():
            (config['local_ip'] is not None and config['local_port'] is None):
             logger.error("Both --local-ip and --local-port must be specified for forwarding")
             sys.exit(1)
-        client = OSCRelayClient(
-            config['server_url'], 
-            config['local_ip'], 
-            config['local_port'], 
-            config['client_name'],
-            config['api_key']
-        )
+        client = OSCRelayClient(config_path)
         client.status_signal.connect(lambda status: print(f"Status: {status}"))
         client.message_signal.connect(lambda msg: print(f"Message: {msg}"))
         client.start()
