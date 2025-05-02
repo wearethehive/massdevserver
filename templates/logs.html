@@ -42,6 +42,12 @@
         .log-message {
             color: #e9ecef;
         }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
@@ -51,6 +57,7 @@
             <div>
                 <button id="refreshBtn" class="btn btn-primary">Refresh</button>
                 <button id="autoRefreshBtn" class="btn btn-success">Auto-Refresh</button>
+                <button id="copyLogsBtn" class="btn btn-info">Copy Logs</button>
             </div>
             <div>
                 <select id="logLevelFilter" class="form-select">
@@ -64,11 +71,22 @@
         <div id="logContainer" class="log-container"></div>
     </div>
 
+    <!-- Toast notification -->
+    <div class="toast align-items-center text-white bg-success border-0" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body">
+                Logs copied to clipboard!
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    </div>
+
     <script>
         const socket = io();
         const apiKey = '{{ api_key }}';
         let autoRefresh = false;
         let autoRefreshInterval;
+        let allLogs = []; // Store all logs
 
         function formatLogEntry(log) {
             const parts = log.split(' - ');
@@ -94,14 +112,32 @@
                     const container = document.getElementById('logContainer');
                     const filter = document.getElementById('logLevelFilter').value;
                     
-                    container.innerHTML = data.logs
-                        .filter(log => filter === 'all' || log.toLowerCase().includes(` - ${filter} - `))
-                        .map(formatLogEntry)
-                        .join('');
+                    // Store all logs
+                    allLogs = data.logs;
                     
+                    // Filter and display logs
+                    const filteredLogs = allLogs.filter(log => 
+                        filter === 'all' || log.toLowerCase().includes(` - ${filter} - `)
+                    );
+                    
+                    container.innerHTML = filteredLogs.map(formatLogEntry).join('');
                     container.scrollTop = container.scrollHeight;
                 })
                 .catch(error => console.error('Error fetching logs:', error));
+        }
+
+        function copyLogsToClipboard() {
+            const logsText = allLogs.join('\n');
+            navigator.clipboard.writeText(logsText)
+                .then(() => {
+                    // Show toast notification
+                    const toast = new bootstrap.Toast(document.querySelector('.toast'));
+                    toast.show();
+                })
+                .catch(err => {
+                    console.error('Failed to copy logs:', err);
+                    alert('Failed to copy logs to clipboard');
+                });
         }
 
         document.getElementById('refreshBtn').addEventListener('click', updateLogs);
@@ -117,6 +153,8 @@
             }
         });
 
+        document.getElementById('copyLogsBtn').addEventListener('click', copyLogsToClipboard);
+
         document.getElementById('logLevelFilter').addEventListener('change', updateLogs);
 
         // Initial load
@@ -131,5 +169,6 @@
             console.log('Disconnected from server');
         });
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html> 
