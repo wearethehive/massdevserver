@@ -167,6 +167,7 @@ current_addresses = OSC_ADDRESSES.copy()  # Working copy of addresses
 interval_min = 0.5  # Default minimum interval
 interval_max = 3.0  # Default maximum interval
 connected_clients = set()
+connection_tracker = {}  # Dictionary to track client connections
 
 # Relay service variables
 registered_receivers = {}  # Dictionary to store registered receivers

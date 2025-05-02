@@ -153,13 +153,18 @@ class OSCRelayClient(QObject):
         self.max_reconnect_delay = 30  # Maximum delay in seconds
         self.connection_lock = threading.Lock()  # Add lock for connection handling
         self.is_connecting = False  # Add flag to track connection state
+        self.running = False  # Add flag to track if client is running
+        self.thread = None
+        self.signal_lock = threading.Lock()  # Add lock for signal handling
+        
         if local_osc_ip and local_osc_port:
             try:
                 self.osc_client = udp_client.SimpleUDPClient(local_osc_ip, local_osc_port)
                 logger.info(f"Created OSC client for forwarding to {local_osc_ip}:{local_osc_port}")
             except Exception as e:
                 logger.error(f"Failed to create OSC client: {e}")
-                self.status_signal.emit(f"Failed to create OSC client: {e}")
+                self.safe_emit_status(f"Failed to create OSC client: {e}")
+                
         self.sio = socketio.Client(reconnection=True, reconnection_attempts=self.max_reconnect_attempts,
                                  reconnection_delay=self.reconnect_delay, reconnection_delay_max=self.max_reconnect_delay)
         self.sio.on('connect', self.on_connect)
@@ -172,28 +177,48 @@ class OSCRelayClient(QObject):
         self.sio.on('receiver_list_update', self.on_receiver_list_update)
         self.message_count = 0
         self.start_time = None
-        self.running = False
-        self.thread = None
+
+    def safe_emit_status(self, message):
+        """Safely emit status signal with thread safety"""
+        try:
+            with self.signal_lock:
+                if self.running:  # Only emit if client is still running
+                    self.status_signal.emit(message)
+        except Exception as e:
+            logger.error(f"Error emitting status signal: {e}")
+
+    def safe_emit_message(self, message):
+        """Safely emit message signal with thread safety"""
+        try:
+            with self.signal_lock:
+                if self.running:  # Only emit if client is still running
+                    self.message_signal.emit(message)
+        except Exception as e:
+            logger.error(f"Error emitting message signal: {e}")
 
     def start(self):
+        """Start the client"""
         if not self.running:
             self.running = True
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
 
     def stop(self):
+        """Stop the client"""
         self.running = False
         try:
             if self.sio.connected:
                 self.sio.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error during disconnect: {e}")
+        
         if self.was_manually_disconnected:
-            self.status_signal.emit("Stopped (manually disconnected)")
+            self.safe_emit_status("Stopped (manually disconnected)")
         else:
-            self.status_signal.emit("Stopped")
+            self.safe_emit_status("Stopped")
 
     def run(self):
+        """Main client loop"""
         try:
             with self.connection_lock:
                 if self.is_connecting:
@@ -216,43 +241,43 @@ class OSCRelayClient(QObject):
                 try:
                     self.sio.connect(self.server_url, auth=auth_data, wait_timeout=5)
                     logger.info(f"Connected to server: {self.server_url}")
-                    self.status_signal.emit(f"Connected to {self.server_url}")
+                    self.safe_emit_status(f"Connected to {self.server_url}")
                     self.start_time = time.time()
                     self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
                 except Exception as e:
                     logger.error(f"Failed to connect: {e}")
-                    self.status_signal.emit(f"Failed to connect: {e}")
+                    self.safe_emit_status(f"Failed to connect: {e}")
                     if self.running and not self.was_manually_disconnected:
                         self.reconnect_attempts += 1
                         if self.reconnect_attempts <= self.max_reconnect_attempts:
                             delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
                             logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                            self.status_signal.emit(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                            self.safe_emit_status(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
                             time.sleep(delay)
                             if self.running:
                                 self.run()
                         else:
                             logger.error("Max reconnection attempts reached")
-                            self.status_signal.emit("Max reconnection attempts reached. Please check your connection and try again.")
+                            self.safe_emit_status("Max reconnection attempts reached. Please check your connection and try again.")
                             self.stop()
             else:
                 logger.info("Already connected to server")
-                self.status_signal.emit("Already connected to server")
+                self.safe_emit_status("Already connected to server")
             
             while self.running:
                 time.sleep(0.1)
         except Exception as e:
             logger.error(f"Error in run loop: {e}")
-            self.status_signal.emit(f"Error: {e}")
+            self.safe_emit_status(f"Error: {e}")
         finally:
             with self.connection_lock:
                 self.is_connecting = False
-            self.status_signal.emit("Stopped")
+            self.safe_emit_status("Stopped")
 
     def on_connect(self):
         """Handle successful connection"""
         logger.info("Connected to server, registering as receiver...")
-        self.status_signal.emit("Connected, registering as receiver...")
+        self.safe_emit_status("Connected, registering as receiver...")
         
         # Only include API key in registration if it's not empty
         registration_data = {'name': self.name}
@@ -268,22 +293,22 @@ class OSCRelayClient(QObject):
     def on_disconnect(self):
         """Handle disconnection"""
         logger.warning("Disconnected from server")
-        self.status_signal.emit("Disconnected from server")
+        self.safe_emit_status("Disconnected from server")
         
         # Only attempt reconnection if not manually disconnected
         if self.running and not self.was_manually_disconnected:
-            self.status_signal.emit("Disconnected from server. Reconnecting in 5s...")
+            self.safe_emit_status("Disconnected from server. Reconnecting in 5s...")
             time.sleep(5)
             if self.running:
                 self.run()
         elif self.was_manually_disconnected:
-            self.status_signal.emit("Manually disconnected. Please restart the client to reconnect.")
+            self.safe_emit_status("Manually disconnected. Please restart the client to reconnect.")
 
     def on_registration_confirmed(self, data):
         """Handle successful registration"""
         self.receiver_id = data['receiver_id']
         logger.info(f"Registered as receiver: {self.name} (ID: {self.receiver_id})")
-        self.status_signal.emit(f"Registered as receiver: {self.name}")
+        self.safe_emit_status(f"Registered as receiver: {self.name}")
         
         # Request current status from server after registration
         self.sio.emit('get_status', {'api_key': self.api_key})
@@ -296,7 +321,7 @@ class OSCRelayClient(QObject):
         error_msg = data.get('error', 'Unknown error')
         logger.error(f"Registration failed: {error_msg}")
         logger.error(f"Registration data: {data}")
-        self.status_signal.emit(f"Registration failed: {error_msg}")
+        self.safe_emit_status(f"Registration failed: {error_msg}")
         self.was_manually_disconnected = True
         self.stop()
 
@@ -312,7 +337,7 @@ class OSCRelayClient(QObject):
         logger.info(f"Is sending: {is_sending}")
         
         # Update status signal with more detailed information
-        self.status_signal.emit(f"{status}: {message}")
+        self.safe_emit_status(f"{status}: {message}")
         
         # If we're registered, check if we're in the receivers list
         if self.receiver_id:
@@ -345,12 +370,12 @@ class OSCRelayClient(QObject):
                 self.osc_client.send_message(message['address'], message['value'])
             except Exception as e:
                 logger.error(f"Failed to forward message: {e}")
-        self.message_signal.emit(msg)
+        self.safe_emit_message(msg)
 
     def on_manual_disconnect(self, data):
         """Handle manual disconnection from server"""
         logger.info("Received manual disconnect from server")
-        self.status_signal.emit("Manually disconnected by server")
+        self.safe_emit_status("Manually disconnected by server")
         self.was_manually_disconnected = True
         self.stop()
 
@@ -358,12 +383,12 @@ class OSCRelayClient(QObject):
         """Start sending OSC messages"""
         if not self.sio.connected:
             logger.error("Cannot start sending: Not connected to server")
-            self.status_signal.emit("Cannot start sending: Not connected to server")
+            self.safe_emit_status("Cannot start sending: Not connected to server")
             return
         
         if not self.receiver_id:
             logger.error("Cannot start sending: Not registered as receiver")
-            self.status_signal.emit("Cannot start sending: Not registered as receiver")
+            self.safe_emit_status("Cannot start sending: Not registered as receiver")
             return
         
         data = {
