@@ -1030,10 +1030,18 @@
         }
 
         function startSending() {
-            if (!receiverId) {
-                alert('Please register as a receiver first');
+            // Get the first active receiver's ID
+            const receivers = document.querySelectorAll('#receiversList tr');
+            if (receivers.length === 0) {
+                alert('No active receivers available');
                 return;
             }
+
+            // Get the first receiver's ID from the disconnect button's onclick attribute
+            const firstReceiver = receivers[0];
+            const disconnectBtn = firstReceiver.querySelector('button');
+            const onclickAttr = disconnectBtn.getAttribute('onclick');
+            const receiverId = onclickAttr.match(/'([^']+)'/)[1]; // Extract ID from onclick string
 
             const data = {
                 api_key: '{{ api_key }}',
@@ -1048,10 +1056,18 @@
         }
 
         function stopSending() {
-            if (!receiverId) {
-                alert('Please register as a receiver first');
+            // Get the first active receiver's ID
+            const receivers = document.querySelectorAll('#receiversList tr');
+            if (receivers.length === 0) {
+                alert('No active receivers available');
                 return;
             }
+
+            // Get the first receiver's ID from the disconnect button's onclick attribute
+            const firstReceiver = receivers[0];
+            const disconnectBtn = firstReceiver.querySelector('button');
+            const onclickAttr = disconnectBtn.getAttribute('onclick');
+            const receiverId = onclickAttr.match(/'([^']+)'/)[1]; // Extract ID from onclick string
 
             const data = {
                 api_key: '{{ api_key }}',
