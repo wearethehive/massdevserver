@@ -74,7 +74,8 @@ cache = Cache(app)
 
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', ping_timeout=10, ping_interval=5)
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', 
+                   ping_timeout=10, ping_interval=5, max_http_buffer_size=1e8)
 
 # Configure rate limiting
 limiter = Limiter(
@@ -293,11 +294,21 @@ def get_receivers_list():
         })
     return receivers
 
+# Add connection tracking
+connection_tracker = {}
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
     client_id = request.sid
     logger.info(f"Client connected: {client_id}")
+    
+    # Track connection time
+    connection_tracker[client_id] = {
+        'connected_at': datetime.now().isoformat(),
+        'last_ping': time.time()
+    }
+    
     connected_clients.add(client_id)
     emit('status_update', {
         'status': 'connected',
@@ -314,6 +325,11 @@ def handle_disconnect():
     """Handle client disconnection"""
     client_id = request.sid
     logger.info(f"Client disconnected: {client_id}")
+    
+    # Remove connection tracking
+    if client_id in connection_tracker:
+        del connection_tracker[client_id]
+    
     connected_clients.discard(client_id)
     # Remove from registered receivers if needed
     for receiver_id, receiver in list(registered_receivers.items()):
@@ -322,6 +338,13 @@ def handle_disconnect():
             logger.info(f"Removed registered receiver: {receiver_id}")
     # Broadcast updated client list to all connected clients
     emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+
+@socketio.on('ping')
+def handle_ping():
+    """Handle ping from client"""
+    client_id = request.sid
+    if client_id in connection_tracker:
+        connection_tracker[client_id]['last_ping'] = time.time()
 
 @socketio.on('get_status')
 def handle_get_status(data):
@@ -435,7 +458,6 @@ def handle_stop_sending(data):
     else:
         logger.info("OSC message sending already stopped")
 
-# Relay service handlers
 @socketio.on('register_receiver')
 @limiter.limit("10 per minute")
 def handle_register_receiver(data):
@@ -450,6 +472,12 @@ def handle_register_receiver(data):
         emit('registration_failed', {'error': 'Invalid API key'}, room=client_id)
         return
     
+    # Check if client is still connected
+    if client_id not in connection_tracker:
+        logger.warning(f"Client {client_id} not found in connection tracker")
+        emit('registration_failed', {'error': 'Connection lost'}, room=client_id)
+        return
+    
     # Generate a unique receiver ID
     receiver_id = str(uuid.uuid4())
     
@@ -458,7 +486,7 @@ def handle_register_receiver(data):
         'name': name,
         'client_id': client_id,
         'api_key': api_key,
-        'connected_at': datetime.now().isoformat()
+        'connected_at': connection_tracker[client_id]['connected_at']
     }
     
     logger.info(f"Registered receiver: {name} (ID: {receiver_id})")
@@ -576,6 +604,43 @@ def test_keys():
         'status': 'ok',
         'message': 'API keys are configured'
     })
+
+# Add periodic connection check
+def check_connections():
+    """Periodically check and clean up stale connections"""
+    current_time = time.time()
+    stale_clients = []
+    
+    for client_id, info in connection_tracker.items():
+        if current_time - info['last_ping'] > 15:  # 15 seconds without ping
+            stale_clients.append(client_id)
+    
+    for client_id in stale_clients:
+        logger.warning(f"Client {client_id} is stale, removing")
+        if client_id in connected_clients:
+            connected_clients.remove(client_id)
+        if client_id in connection_tracker:
+            del connection_tracker[client_id]
+        # Remove from registered receivers if needed
+        for receiver_id, receiver in list(registered_receivers.items()):
+            if receiver.get('client_id') == client_id:
+                del registered_receivers[receiver_id]
+                logger.info(f"Removed stale receiver: {receiver_id}")
+    
+    if stale_clients:
+        emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+        emit('receiver_list_update', {
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
+        }, broadcast=True)
+
+# Start the connection check thread
+connection_check_thread = threading.Thread(target=lambda: 
+    [time.sleep(5), check_connections() for _ in iter(int, 1)], daemon=True)
+connection_check_thread.start()
 
 if __name__ == '__main__':
     # Use environment variables for host and port

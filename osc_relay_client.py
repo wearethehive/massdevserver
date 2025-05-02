@@ -151,6 +151,8 @@ class OSCRelayClient(QObject):
         self.max_reconnect_attempts = 5
         self.reconnect_delay = 1  # Initial delay in seconds
         self.max_reconnect_delay = 30  # Maximum delay in seconds
+        self.connection_lock = threading.Lock()  # Add lock for connection handling
+        self.is_connecting = False  # Add flag to track connection state
         if local_osc_ip and local_osc_port:
             try:
                 self.osc_client = udp_client.SimpleUDPClient(local_osc_ip, local_osc_port)
@@ -192,6 +194,12 @@ class OSCRelayClient(QObject):
 
     def run(self):
         try:
+            with self.connection_lock:
+                if self.is_connecting:
+                    logger.info("Connection attempt already in progress")
+                    return
+                self.is_connecting = True
+
             # Connect with API key in query parameters
             logger.info(f"Connecting to server {self.server_url} with API key: {self.api_key}")
             
@@ -232,6 +240,8 @@ class OSCRelayClient(QObject):
                     self.status_signal.emit("Max reconnection attempts reached. Please check your connection and try again.")
                     self.stop()
         finally:
+            with self.connection_lock:
+                self.is_connecting = False
             self.status_signal.emit("Stopped")
 
     def on_connect(self):
