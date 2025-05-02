@@ -201,11 +201,18 @@ class OSCRelayClient(QObject):
                 auth_data = {'api_key': self.api_key}
             
             logger.info(f"Auth data: {auth_data}")
-            self.sio.connect(self.server_url, auth=auth_data, wait_timeout=10)
-            logger.info(f"Connected to server: {self.server_url}")
-            self.status_signal.emit(f"Connected to {self.server_url}")
-            self.start_time = time.time()
-            self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
+            
+            # Check if already connected before attempting to connect
+            if not self.sio.connected:
+                self.sio.connect(self.server_url, auth=auth_data, wait_timeout=10)
+                logger.info(f"Connected to server: {self.server_url}")
+                self.status_signal.emit(f"Connected to {self.server_url}")
+                self.start_time = time.time()
+                self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
+            else:
+                logger.info("Already connected to server")
+                self.status_signal.emit("Already connected to server")
+            
             while self.running:
                 time.sleep(0.1)
         except Exception as e:
@@ -238,6 +245,9 @@ class OSCRelayClient(QObject):
         
         logger.info(f"Registration data: {registration_data}")
         self.sio.emit('register_receiver', registration_data)
+        
+        # Request current status from server
+        self.sio.emit('get_status', {'api_key': self.api_key})
 
     def on_disconnect(self):
         """Handle disconnection"""
@@ -257,6 +267,9 @@ class OSCRelayClient(QObject):
         self.receiver_id = data['receiver_id']
         logger.info(f"Registered as receiver: {self.name} (ID: {self.receiver_id})")
         self.status_signal.emit(f"Registered as receiver: {self.name}")
+        
+        # Request current status from server after registration
+        self.sio.emit('get_status', {'api_key': self.api_key})
 
     def on_registration_failed(self, data):
         """Handle registration failure"""

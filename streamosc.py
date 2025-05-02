@@ -299,7 +299,13 @@ def handle_connect():
     client_id = request.sid
     logger.info(f"Client connected: {client_id}")
     connected_clients.add(client_id)
-    emit('status_update', {'status': 'connected', 'message': 'Connected to server'}, room=client_id)
+    emit('status_update', {
+        'status': 'connected',
+        'message': 'Connected to server',
+        'is_sending': is_sending,
+        'destinations': destinations,
+        'addresses': current_addresses
+    }, room=client_id)
     # Broadcast updated client list to all connected clients
     emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
 
@@ -316,6 +322,35 @@ def handle_disconnect():
             logger.info(f"Removed registered receiver: {receiver_id}")
     # Broadcast updated client list to all connected clients
     emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
+
+@socketio.on('get_status')
+def handle_get_status(data):
+    """Handle status request from client"""
+    client_id = request.sid
+    api_key = data.get('api_key', '')
+    
+    # Validate API key
+    if api_key not in API_KEYS:
+        logger.warning(f"Invalid API key from client {client_id}")
+        emit('status_update', {
+            'status': 'error',
+            'message': 'Invalid API key'
+        }, room=client_id)
+        return
+    
+    # Send current status to the requesting client
+    emit('status_update', {
+        'status': 'connected',
+        'message': 'Connected to server',
+        'is_sending': is_sending,
+        'destinations': destinations,
+        'addresses': current_addresses,
+        'receivers': [{
+            'id': rid,
+            'name': r['name'],
+            'connected_at': r['connected_at']
+        } for rid, r in registered_receivers.items()]
+    }, room=client_id)
 
 @socketio.on('start_sending')
 @limiter.limit("5 per minute")
@@ -358,10 +393,14 @@ def handle_start_sending(data):
         send_thread = threading.Thread(target=send_random_osc_messages)
         send_thread.start()
         logger.info("OSC message sending thread started")
+        
+        # Broadcast status update to all clients
         emit('status_update', {
             'status': 'started',
             'message': 'OSC message sending started',
-            'is_sending': True
+            'is_sending': True,
+            'destinations': destinations,
+            'addresses': current_addresses
         }, broadcast=True)
     else:
         logger.info("OSC message sending already in progress")
