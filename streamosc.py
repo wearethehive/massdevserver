@@ -184,17 +184,28 @@ logger.info(f"Server API keys: {API_KEYS}")
 def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        api_key = request.args.get('api_key') or request.json.get('api_key')
-        
-        # If no API key is provided, use the default key
-        if not api_key:
-            api_key = 'default-key-for-development'
-            logger.debug("Using default API key")
-        
-        if api_key not in API_KEYS:
-            logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
-            return jsonify({"error": "Unauthorized"}), 401
-        return f(*args, **kwargs)
+        try:
+            api_key = request.args.get('api_key') or request.json.get('api_key')
+            
+            # If no API key is provided, use the default key
+            if not api_key:
+                api_key = 'default-key-for-development'
+                logger.debug("Using default API key")
+            
+            if api_key not in API_KEYS:
+                logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
+                return jsonify({
+                    "error": "Unauthorized",
+                    "message": "Invalid API key"
+                }), 401
+            
+            return f(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in API key validation: {e}")
+            return jsonify({
+                "error": "Internal server error",
+                "message": "Error validating API key"
+            }), 500
     return decorated_function
 
 # Cache the OSC clients to avoid recreating them
@@ -755,36 +766,64 @@ def fix_proxy():
 @require_api_key
 def view_logs():
     """View server logs in real-time"""
-    return render_template('logs.html', api_key=request.args.get('api_key'))
+    try:
+        # Ensure logs directory exists
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Create a default log file if it doesn't exist
+        log_file = os.path.join(log_dir, 'server.log')
+        if not os.path.exists(log_file):
+            with open(log_file, 'w') as f:
+                f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')} - INFO - Created new log file\n")
+        
+        return render_template('logs.html', api_key=request.args.get('api_key'))
+    except Exception as e:
+        logger.error(f"Error in view_logs: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route('/api/logs')
 @require_api_key
 def get_logs():
     """Get recent server logs"""
-    # Get logs from the last 5 minutes
-    cutoff_time = datetime.now() - timedelta(minutes=5)
-    log_entries = []
-    
-    # Get all log handlers
-    for handler in logger.handlers:
-        if isinstance(handler, logging.FileHandler):
-            try:
-                with open(handler.baseFilename, 'r') as f:
-                    for line in f:
-                        # Parse timestamp from log line
-                        try:
-                            timestamp_str = line.split(' - ')[0]
-                            timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
-                            if timestamp > cutoff_time:
+    try:
+        # Get logs from the last 5 minutes
+        cutoff_time = datetime.now() - timedelta(minutes=5)
+        log_entries = []
+        
+        # Ensure logs directory exists
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Get all log files in the directory
+        for filename in os.listdir(log_dir):
+            if filename.endswith('.log'):
+                filepath = os.path.join(log_dir, filename)
+                try:
+                    with open(filepath, 'r') as f:
+                        for line in f:
+                            # Parse timestamp from log line
+                            try:
+                                timestamp_str = line.split(' - ')[0]
+                                timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
+                                if timestamp > cutoff_time:
+                                    log_entries.append(line.strip())
+                            except:
+                                # If we can't parse the timestamp, include the line anyway
                                 log_entries.append(line.strip())
-                        except:
-                            # If we can't parse the timestamp, include the line anyway
-                            log_entries.append(line.strip())
-            except Exception as e:
-                logger.error(f"Error reading log file: {e}")
-    
-    # Return the most recent 100 lines
-    return jsonify({'logs': log_entries[-100:]})
+                except Exception as e:
+                    logger.error(f"Error reading log file {filename}: {e}")
+                    continue
+        
+        # If no log entries were found, add a default message
+        if not log_entries:
+            log_entries.append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')} - INFO - No recent log entries found")
+        
+        # Return the most recent 100 lines
+        return jsonify({'logs': log_entries[-100:]})
+    except Exception as e:
+        logger.error(f"Error in get_logs: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 # Add periodic log cleanup
 def cleanup_old_logs():
