@@ -169,6 +169,7 @@ class OSCRelayClient(QObject):
         self.sio.on('manual_disconnect', self.on_manual_disconnect)
         self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('status_update', self.on_status_update)
+        self.sio.on('receiver_list_update', self.on_receiver_list_update)
         self.message_count = 0
         self.start_time = None
         self.running = False
@@ -286,6 +287,9 @@ class OSCRelayClient(QObject):
         
         # Request current status from server after registration
         self.sio.emit('get_status', {'api_key': self.api_key})
+        
+        # Join the receiver's room
+        self.sio.emit('join', {'room': self.receiver_id})
 
     def on_registration_failed(self, data):
         """Handle registration failure"""
@@ -300,8 +304,36 @@ class OSCRelayClient(QObject):
         """Handle status updates from server"""
         status = data.get('status', '')
         message = data.get('message', '')
+        is_sending = data.get('is_sending', False)
+        receivers = data.get('receivers', [])
+        
         logger.info(f"Status update: {status} - {message}")
+        logger.info(f"Receivers: {receivers}")
+        logger.info(f"Is sending: {is_sending}")
+        
+        # Update status signal with more detailed information
         self.status_signal.emit(f"{status}: {message}")
+        
+        # If we're registered, check if we're in the receivers list
+        if self.receiver_id:
+            is_registered = any(r['id'] == self.receiver_id for r in receivers)
+            if is_registered:
+                logger.info("This client is in the receivers list")
+            else:
+                logger.warning("This client is not in the receivers list, re-registering...")
+                self.on_connect()  # Re-register if we're not in the list
+
+    def on_receiver_list_update(self, data):
+        """Handle receiver list updates"""
+        receivers = data.get('receivers', [])
+        logger.info(f"Receiver list updated: {receivers}")
+        
+        # If we're registered, check if we're in the receivers list
+        if self.receiver_id:
+            is_registered = any(r['id'] == self.receiver_id for r in receivers)
+            if not is_registered:
+                logger.warning("This client is not in the receivers list, re-registering...")
+                self.on_connect()  # Re-register if we're not in the list
 
     def on_relay_message(self, message):
         """Handle incoming OSC messages"""
@@ -321,6 +353,35 @@ class OSCRelayClient(QObject):
         self.status_signal.emit("Manually disconnected by server")
         self.was_manually_disconnected = True
         self.stop()
+
+    def start_sending(self, destinations=None, addresses=None, interval_min=None, interval_max=None):
+        """Start sending OSC messages"""
+        if not self.sio.connected:
+            logger.error("Cannot start sending: Not connected to server")
+            self.status_signal.emit("Cannot start sending: Not connected to server")
+            return
+        
+        if not self.receiver_id:
+            logger.error("Cannot start sending: Not registered as receiver")
+            self.status_signal.emit("Cannot start sending: Not registered as receiver")
+            return
+        
+        data = {
+            'api_key': self.api_key,
+            'receiver_id': self.receiver_id
+        }
+        
+        if destinations:
+            data['destinations'] = destinations
+        if addresses:
+            data['addresses'] = addresses
+        if interval_min is not None:
+            data['interval_min'] = interval_min
+        if interval_max is not None:
+            data['interval_max'] = interval_max
+        
+        logger.info(f"Starting OSC message sending with data: {data}")
+        self.sio.emit('start_sending', data)
 
 # PySide6 GUI
 if PySide6:

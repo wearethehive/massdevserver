@@ -394,20 +394,51 @@ def handle_get_status(data):
         } for rid, r in registered_receivers.items()]
     }, room=client_id)
 
+@socketio.on('join')
+def handle_join(data):
+    """Handle client joining a room"""
+    room = data.get('room')
+    if room:
+        join_room(room)
+        logger.info(f"Client {request.sid} joined room {room}")
+        emit('status_update', {
+            'status': 'joined',
+            'message': f'Joined room {room}',
+            'is_sending': is_sending,
+            'destinations': destinations,
+            'addresses': current_addresses,
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
+        }, room=request.sid)
+
 @socketio.on('start_sending')
 @limiter.limit("5 per minute")
 def handle_start_sending(data):
     global is_sending, send_thread, destinations, current_addresses, interval_min, interval_max
     
-    # Validate API key
+    # Validate API key and receiver ID
     api_key = data.get('api_key')
+    receiver_id = data.get('receiver_id')
+    
     if not api_key or api_key not in API_KEYS:
         logger.warning("Unauthorized attempt to start sending")
         emit('status_update', {
             'status': 'error',
             'message': 'Unauthorized',
             'is_sending': is_sending
-        })
+        }, room=request.sid)
+        return
+    
+    if not receiver_id or receiver_id not in registered_receivers:
+        logger.warning(f"Invalid receiver ID: {receiver_id}")
+        emit('status_update', {
+            'status': 'error',
+            'message': 'Invalid receiver ID',
+            'is_sending': is_sending
+        }, room=request.sid)
         return
     
     if not is_sending:
@@ -449,8 +480,27 @@ def handle_start_sending(data):
                 'connected_at': r['connected_at']
             } for rid, r in registered_receivers.items()]
         }, broadcast=True)
+        
+        # Send confirmation to the requesting client
+        emit('status_update', {
+            'status': 'started',
+            'message': 'OSC message sending started',
+            'is_sending': True,
+            'destinations': destinations,
+            'addresses': current_addresses,
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
+        }, room=request.sid)
     else:
         logger.info("OSC message sending already in progress")
+        emit('status_update', {
+            'status': 'info',
+            'message': 'OSC message sending already in progress',
+            'is_sending': True
+        }, room=request.sid)
 
 @socketio.on('stop_sending')
 @limiter.limit("5 per minute")
