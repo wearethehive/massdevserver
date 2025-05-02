@@ -1,5 +1,5 @@
 {
-    "server_url": "http://massdev.one:80",
+    "server_url": "http://127.0.0.1:7401",
     "api_key": "2d300078ba649e578967b679d1e0cbb76db78934",
     "client_name": "Hive-HomeWS",
     "local_ip": "127.0.0.1",

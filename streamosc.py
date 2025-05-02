@@ -78,8 +78,15 @@ cache = Cache(app)
 
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='eventlet',
-                   ping_timeout=10, ping_interval=5)
+socketio = SocketIO(app, 
+                   cors_allowed_origins=allowed_origins,
+                   async_mode='eventlet',
+                   ping_timeout=60,  # Increased timeout for proxied connections
+                   ping_interval=25,  # Increased interval for proxied connections
+                   max_http_buffer_size=1e8,  # Increased buffer size for proxied connections
+                   allow_upgrades=True,  # Explicitly allow WebSocket upgrades
+                   transports=['websocket', 'polling'],  # Specify allowed transports
+                   engineio_logger=True)  # Enable engine.io logging for debugging
 
 # Configure rate limiting
 limiter = Limiter(
@@ -314,13 +321,21 @@ def handle_connect():
     }
     
     connected_clients.add(client_id)
+    
+    # Send initial status update
     emit('status_update', {
         'status': 'connected',
         'message': 'Connected to server',
         'is_sending': is_sending,
         'destinations': destinations,
-        'addresses': current_addresses
+        'addresses': current_addresses,
+        'receivers': [{
+            'id': rid,
+            'name': r['name'],
+            'connected_at': r['connected_at']
+        } for rid, r in registered_receivers.items()]
     }, room=client_id)
+    
     # Broadcast updated client list to all connected clients
     emit('client_list_update', {'clients': list(connected_clients)}, broadcast=True)
 
@@ -427,7 +442,12 @@ def handle_start_sending(data):
             'message': 'OSC message sending started',
             'is_sending': True,
             'destinations': destinations,
-            'addresses': current_addresses
+            'addresses': current_addresses,
+            'receivers': [{
+                'id': rid,
+                'name': r['name'],
+                'connected_at': r['connected_at']
+            } for rid, r in registered_receivers.items()]
         }, broadcast=True)
     else:
         logger.info("OSC message sending already in progress")
@@ -490,13 +510,29 @@ def handle_register_receiver(data):
         'name': name,
         'client_id': client_id,
         'api_key': api_key,
-        'connected_at': connection_tracker[client_id]['connected_at']
+        'connected_at': connection_tracker[client_id]['connected_at'],
+        'active': True,
+        'socket_id': client_id
     }
     
     logger.info(f"Registered receiver: {name} (ID: {receiver_id})")
     
     # Send confirmation to the registering client
     emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
+    
+    # Send updated status to all clients
+    emit('status_update', {
+        'status': 'connected',
+        'message': 'Connected to server',
+        'is_sending': is_sending,
+        'destinations': destinations,
+        'addresses': current_addresses,
+        'receivers': [{
+            'id': rid,
+            'name': r['name'],
+            'connected_at': r['connected_at']
+        } for rid, r in registered_receivers.items()]
+    }, broadcast=True)
     
     # Broadcast updated receiver list to all connected clients
     emit('receiver_list_update', {
@@ -653,6 +689,15 @@ def connection_check_loop():
 # Start the connection check thread
 connection_check_thread = threading.Thread(target=connection_check_loop, daemon=True)
 connection_check_thread.start()
+
+# Add proxy fix middleware
+@app.before_request
+def fix_proxy():
+    """Fix proxy headers for proper WebSocket handling"""
+    if 'X-Forwarded-For' in request.headers:
+        request.environ['REMOTE_ADDR'] = request.headers['X-Forwarded-For'].split(',')[0]
+    if 'X-Forwarded-Proto' in request.headers:
+        request.environ['wsgi.url_scheme'] = request.headers['X-Forwarded-Proto']
 
 if __name__ == '__main__':
     # Use environment variables for host and port

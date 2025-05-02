@@ -212,11 +212,28 @@ class OSCRelayClient(QObject):
             
             # Check if already connected before attempting to connect
             if not self.sio.connected:
-                self.sio.connect(self.server_url, auth=auth_data, wait_timeout=10)
-                logger.info(f"Connected to server: {self.server_url}")
-                self.status_signal.emit(f"Connected to {self.server_url}")
-                self.start_time = time.time()
-                self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
+                try:
+                    self.sio.connect(self.server_url, auth=auth_data, wait_timeout=5)
+                    logger.info(f"Connected to server: {self.server_url}")
+                    self.status_signal.emit(f"Connected to {self.server_url}")
+                    self.start_time = time.time()
+                    self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
+                except Exception as e:
+                    logger.error(f"Failed to connect: {e}")
+                    self.status_signal.emit(f"Failed to connect: {e}")
+                    if self.running and not self.was_manually_disconnected:
+                        self.reconnect_attempts += 1
+                        if self.reconnect_attempts <= self.max_reconnect_attempts:
+                            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
+                            logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                            self.status_signal.emit(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                            time.sleep(delay)
+                            if self.running:
+                                self.run()
+                        else:
+                            logger.error("Max reconnection attempts reached")
+                            self.status_signal.emit("Max reconnection attempts reached. Please check your connection and try again.")
+                            self.stop()
             else:
                 logger.info("Already connected to server")
                 self.status_signal.emit("Already connected to server")
@@ -224,27 +241,15 @@ class OSCRelayClient(QObject):
             while self.running:
                 time.sleep(0.1)
         except Exception as e:
-            logger.error(f"Failed to connect: {e}")
-            self.status_signal.emit(f"Failed to connect: {e}")
-            if self.running and not self.was_manually_disconnected:
-                self.reconnect_attempts += 1
-                if self.reconnect_attempts <= self.max_reconnect_attempts:
-                    delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
-                    logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                    self.status_signal.emit(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                    time.sleep(delay)
-                    if self.running:
-                        self.run()
-                else:
-                    logger.error("Max reconnection attempts reached")
-                    self.status_signal.emit("Max reconnection attempts reached. Please check your connection and try again.")
-                    self.stop()
+            logger.error(f"Error in run loop: {e}")
+            self.status_signal.emit(f"Error: {e}")
         finally:
             with self.connection_lock:
                 self.is_connecting = False
             self.status_signal.emit("Stopped")
 
     def on_connect(self):
+        """Handle successful connection"""
         logger.info("Connected to server, registering as receiver...")
         self.status_signal.emit("Connected, registering as receiver...")
         
@@ -274,6 +279,7 @@ class OSCRelayClient(QObject):
             self.status_signal.emit("Manually disconnected. Please restart the client to reconnect.")
 
     def on_registration_confirmed(self, data):
+        """Handle successful registration"""
         self.receiver_id = data['receiver_id']
         logger.info(f"Registered as receiver: {self.name} (ID: {self.receiver_id})")
         self.status_signal.emit(f"Registered as receiver: {self.name}")
@@ -298,6 +304,7 @@ class OSCRelayClient(QObject):
         self.status_signal.emit(f"{status}: {message}")
 
     def on_relay_message(self, message):
+        """Handle incoming OSC messages"""
         self.message_count += 1
         msg = f"{message['address']} = {message['value']}"
         logger.debug(f"Received OSC message: {msg}")
