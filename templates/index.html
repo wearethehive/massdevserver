@@ -783,6 +783,23 @@
                 intervalMax = data.interval_max;
                 document.getElementById('intervalMax').value = intervalMax;
             }
+            if (data.receivers) {
+                updateReceiversList(data.receivers);
+            }
+        });
+
+        socket.on('receiver_list_update', (data) => {
+            verboseLog('Receiver list update received:', data);
+            if (data.receivers) {
+                updateReceiversList(data.receivers);
+            }
+        });
+
+        socket.on('registration_confirmed', (data) => {
+            receiverId = data.receiver_id;
+            showRegistrationStatus('Successfully registered as receiver', 'success');
+            document.getElementById('relayMessages').classList.remove('d-none');
+            verboseLog('Registered as receiver with ID:', receiverId);
         });
 
         socket.on('osc_message', (message) => {
@@ -793,23 +810,8 @@
         // Event Listeners
         document.getElementById('addDestinationBtn').addEventListener('click', addDestination);
         document.getElementById('addAddressBtn').addEventListener('click', addAddress);
-        document.getElementById('startBtn').addEventListener('click', () => {
-            if (!validateIntervals()) {
-                return;
-            }
-            socket.emit('start_sending', {
-                destinations,
-                addresses,
-                interval_min: parseFloat(document.getElementById('intervalMin').value),
-                interval_max: parseFloat(document.getElementById('intervalMax').value),
-                api_key: '{{ api_key }}'
-            });
-        });
-        document.getElementById('stopBtn').addEventListener('click', () => {
-            socket.emit('stop_sending', {
-                api_key: '{{ api_key }}'
-            });
-        });
+        document.getElementById('startBtn').addEventListener('click', startSending);
+        document.getElementById('stopBtn').addEventListener('click', stopSending);
         document.getElementById('newAddressInput').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {
                 addAddress();
@@ -896,13 +898,17 @@
             tbody.innerHTML = '';
 
             // Update relay status based on active receivers
-            const hasActiveReceivers = receivers.some(receiver => receiver.active);
+            const hasActiveReceivers = receivers.length > 0;
             if (hasActiveReceivers) {
                 relayStatus.textContent = 'Connected';
                 relayStatus.className = 'badge bg-success';
+                // Enable the start button if there are active receivers
+                document.getElementById('startBtn').disabled = false;
             } else {
                 relayStatus.textContent = 'Not Connected';
                 relayStatus.className = 'badge bg-secondary';
+                // Disable the start button if there are no active receivers
+                document.getElementById('startBtn').disabled = true;
             }
 
             if (receivers.length === 0) {
@@ -914,25 +920,18 @@
 
             receivers.forEach(receiver => {
                 const row = document.createElement('tr');
-                const createdDate = new Date(receiver.created_at * 1000).toLocaleString();
-                const statusClass = receiver.active ? 'text-success' : 'text-danger';
-                const statusText = receiver.active ? 'Active' : 'Offline';
-
-                row.className = receiver.active ? 'table-success' : 'table-danger';
+                const connectedDate = new Date(receiver.connected_at).toLocaleString();
+                row.className = 'table-success';
                 row.innerHTML = `
                     <td>${receiver.name}</td>
-                    <td><span class="${statusClass}">${statusText}</span></td>
-                    <td>${createdDate}</td>
+                    <td><span class="text-success">Active</span></td>
+                    <td>${connectedDate}</td>
                     <td>
-                        ${receiver.active ?
-                        `<button class="btn btn-sm btn-danger" onclick="disconnectReceiver('${receiver.id}', '${receiver.name}')">
-                                Disconnect
-                            </button>` :
-                        ''
-                    }
+                        <button class="btn btn-sm btn-danger" onclick="disconnectReceiver('${receiver.id}', '${receiver.name}')">
+                            Disconnect
+                        </button>
                     </td>
                 `;
-
                 tbody.appendChild(row);
             });
 
@@ -962,19 +961,6 @@
             log.appendChild(item);
             log.scrollTop = log.scrollHeight;
         }
-
-        // Socket.io event handlers for relay service
-        socket.on('registration_confirmed', (data) => {
-            receiverId = data.receiver_id;
-            showRegistrationStatus(data.message, 'success');
-            document.getElementById('relayMessages').classList.remove('d-none');
-            verboseLog('Registered as receiver with ID:', receiverId);
-        });
-
-        socket.on('receiver_list_updated', (data) => {
-            verboseLog('Receiver list updated:', data.receivers);
-            updateReceiversList(data.receivers);
-        });
 
         // Event Listeners for relay service
         document.getElementById('registerReceiverBtn').addEventListener('click', registerAsReceiver);
@@ -1041,6 +1027,38 @@
         function openDownloadDialog() {
             const modal = new bootstrap.Modal(document.getElementById('downloadModal'));
             modal.show();
+        }
+
+        function startSending() {
+            if (!receiverId) {
+                alert('Please register as a receiver first');
+                return;
+            }
+
+            const data = {
+                api_key: '{{ api_key }}',
+                receiver_id: receiverId,
+                destinations: destinations,
+                addresses: addresses,
+                interval_min: parseFloat(document.getElementById('intervalMin').value),
+                interval_max: parseFloat(document.getElementById('intervalMax').value)
+            };
+
+            socket.emit('start_sending', data);
+        }
+
+        function stopSending() {
+            if (!receiverId) {
+                alert('Please register as a receiver first');
+                return;
+            }
+
+            const data = {
+                api_key: '{{ api_key }}',
+                receiver_id: receiverId
+            };
+
+            socket.emit('stop_sending', data);
         }
     </script>
 </body>
