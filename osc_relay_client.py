@@ -137,58 +137,35 @@ class OSCRelayClient(QObject):
     status_signal = Signal(str)
     message_signal = Signal(str)
 
-    def __init__(self, server_url, local_osc_ip=None, local_osc_port=None, name="OSC Relay Client", api_key=DEFAULT_API_KEY):
-        super().__init__()
-        self.server_url = server_url
-        self.local_osc_ip = local_osc_ip
-        self.local_osc_port = local_osc_port
-        self.name = name
-        self.api_key = api_key
-        self.receiver_id = None
-        self.osc_client = None
-        self.was_manually_disconnected = False
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
-        self.reconnect_delay = 1  # Initial delay in seconds
-        self.max_reconnect_delay = 30  # Maximum delay in seconds
-        self.connection_lock = threading.Lock()  # Add lock for connection handling
-        self.is_connecting = False  # Add flag to track connection state
-        self.running = False  # Add flag to track if client is running
-        self.thread = None
-        self.signal_lock = threading.Lock()  # Add lock for signal handling
-        self.receivers = []
-        self.is_sending = False
-        
-        if local_osc_ip and local_osc_port:
-            try:
-                self.osc_client = udp_client.SimpleUDPClient(local_osc_ip, local_osc_port)
-                logger.info(f"Created OSC client for forwarding to {local_osc_ip}:{local_osc_port}")
-            except Exception as e:
-                logger.error(f"Failed to create OSC client: {e}")
-                self.safe_emit_status(f"Failed to create OSC client: {e}")
-                
-        # Configure Socket.IO with proper settings for NPM proxy
+    def __init__(self, config_path='config.json'):
+        """Initialize the OSC relay client"""
+        self.config = self.load_config(config_path)
         self.sio = socketio.Client(
             reconnection=True,
-            reconnection_attempts=self.max_reconnect_attempts,
-            reconnection_delay=self.reconnect_delay,
-            reconnection_delay_max=self.max_reconnect_delay,
-            handle_sigint=False,  # Don't handle SIGINT
-            logger=True,  # Enable logging
-            engineio_logger=True  # Enable engine.io logging
+            reconnection_attempts=5,
+            reconnection_delay=1000,
+            reconnection_delay_max=5000,
+            logger=True,
+            engineio_logger=True,
+            handle_sigint=True
         )
+        self.osc_sender = None
+        self.osc_receiver = None
+        self.connection_lock = threading.Lock()
+        self.is_connected = False
+        self.is_registered = False
+        self.receiver_id = None
+        self.receiver_name = self.config.get('receiver_name', 'Unnamed Receiver')
+        self.api_key = self.config.get('api_key', '')
+        self.server_url = self.config.get('server_url', 'http://localhost:7401')
         
         # Set up event handlers
         self.sio.on('connect', self.on_connect)
         self.sio.on('disconnect', self.on_disconnect)
         self.sio.on('registration_confirmed', self.on_registration_confirmed)
-        self.sio.on('relay_message', self.on_relay_message)
-        self.sio.on('manual_disconnect', self.on_manual_disconnect)
         self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('status_update', self.on_status_update)
-        self.sio.on('receiver_list_update', self.on_receiver_list_update)
-        self.message_count = 0
-        self.start_time = None
+        self.sio.on('error', self.on_error)
 
     def safe_emit_status(self, message):
         """Safely emit status signal with thread safety"""
@@ -373,17 +350,11 @@ class OSCRelayClient(QObject):
         except Exception as e:
             logger.error(f"Error in status update handler: {e}")
 
-    def on_receiver_list_update(self, data):
-        """Handle receiver list updates"""
-        receivers = data.get('receivers', [])
-        logger.info(f"Receiver list updated: {receivers}")
-        
-        # If we're registered, check if we're in the receivers list
-        if self.receiver_id:
-            is_registered = any(r['id'] == self.receiver_id for r in receivers)
-            if not is_registered:
-                logger.warning("This client is not in the receivers list, re-registering...")
-                self.on_connect()  # Re-register if we're not in the list
+    def on_error(self, data):
+        """Handle errors from server"""
+        error_msg = data.get('error', 'Unknown error')
+        logger.error(f"Error: {error_msg}")
+        self.safe_emit_status(f"Error: {error_msg}")
 
     def on_relay_message(self, message):
         """Handle incoming OSC messages"""

@@ -82,13 +82,13 @@ allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').spl
 socketio = SocketIO(app, 
                    cors_allowed_origins=allowed_origins,
                    async_mode='eventlet',
-                   ping_timeout=60,  # Increased timeout for proxied connections
-                   ping_interval=25,  # Increased interval for proxied connections
-                   max_http_buffer_size=1e8,  # Increased buffer size for proxied connections
-                   allow_upgrades=True,  # Explicitly allow WebSocket upgrades
-                   transports=['websocket', 'polling'],  # Specify allowed transports
-                   engineio_logger=True,  # Enable engine.io logging for debugging
-                   manage_session=False)  # Disable session management to prevent invalid session errors
+                   ping_timeout=60,
+                   ping_interval=25,
+                   max_http_buffer_size=1e8,
+                   allow_upgrades=True,
+                   transports=['websocket', 'polling'],
+                   engineio_logger=True,
+                   manage_session=False)
 
 # Configure rate limiting
 limiter = Limiter(
