@@ -350,7 +350,7 @@ def handle_connect(auth=None):
     
     # Send initial status update
     try:
-        socketio.emit('status_update', {
+        status_data = {
             'status': 'connected',
             'message': 'Connected to server',
             'is_sending': is_sending,
@@ -361,14 +361,18 @@ def handle_connect(auth=None):
                 'name': r['name'],
                 'connected_at': r['connected_at']
             } for rid, r in registered_receivers.items()]
-        }, room=client_id)
+        }
+        logger.info(f"Sending initial status update to client {client_id}: {status_data}")
+        socketio.emit('status_update', status_data, room=client_id)
         logger.info(f"Sent initial status update to client {client_id}")
     except Exception as e:
         logger.error(f"Error sending status update to client {client_id}: {e}")
     
     # Broadcast updated client list to all connected clients
     try:
-        socketio.emit('client_list_update', {'clients': list(connected_clients)}, namespace='/')
+        client_list_data = {'clients': list(connected_clients)}
+        logger.info(f"Broadcasting client list update: {client_list_data}")
+        socketio.emit('client_list_update', client_list_data, namespace='/')
         logger.info(f"Broadcasted client list update: {list(connected_clients)}")
     except Exception as e:
         logger.error(f"Error broadcasting client list update: {e}")
@@ -609,14 +613,16 @@ def handle_register_receiver(data):
     
     # Send confirmation to the registering client
     try:
-        socketio.emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
+        confirmation_data = {'receiver_id': receiver_id}
+        logger.info(f"Sending registration confirmation to client {client_id}: {confirmation_data}")
+        socketio.emit('registration_confirmed', confirmation_data, room=client_id)
         logger.info(f"Sent registration confirmation to client {client_id}")
     except Exception as e:
         logger.error(f"Error sending registration confirmation: {e}")
     
     # Send updated status to all clients
     try:
-        socketio.emit('status_update', {
+        status_data = {
             'status': 'connected',
             'message': 'Connected to server',
             'is_sending': is_sending,
@@ -627,20 +633,24 @@ def handle_register_receiver(data):
                 'name': r['name'],
                 'connected_at': r['connected_at']
             } for rid, r in registered_receivers.items()]
-        }, broadcast=True)
+        }
+        logger.info(f"Broadcasting status update to all clients: {status_data}")
+        socketio.emit('status_update', status_data, broadcast=True)
         logger.info("Broadcasted status update to all clients")
     except Exception as e:
         logger.error(f"Error broadcasting status update: {e}")
     
     # Broadcast updated receiver list to all connected clients
     try:
-        socketio.emit('receiver_list_update', {
+        receiver_list_data = {
             'receivers': [{
                 'id': rid,
                 'name': r['name'],
                 'connected_at': r['connected_at']
             } for rid, r in registered_receivers.items()]
-        }, broadcast=True)
+        }
+        logger.info(f"Broadcasting receiver list update: {receiver_list_data}")
+        socketio.emit('receiver_list_update', receiver_list_data, broadcast=True)
         logger.info("Broadcasted receiver list update to all clients")
     except Exception as e:
         logger.error(f"Error broadcasting receiver list update: {e}")

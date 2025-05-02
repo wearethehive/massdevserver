@@ -167,8 +167,18 @@ class OSCRelayClient(QObject):
                 logger.error(f"Failed to create OSC client: {e}")
                 self.safe_emit_status(f"Failed to create OSC client: {e}")
                 
-        self.sio = socketio.Client(reconnection=True, reconnection_attempts=self.max_reconnect_attempts,
-                                 reconnection_delay=self.reconnect_delay, reconnection_delay_max=self.max_reconnect_delay)
+        # Configure Socket.IO with proper settings for NPM proxy
+        self.sio = socketio.Client(
+            reconnection=True,
+            reconnection_attempts=self.max_reconnect_attempts,
+            reconnection_delay=self.reconnect_delay,
+            reconnection_delay_max=self.max_reconnect_delay,
+            handle_sigint=False,  # Don't handle SIGINT
+            logger=True,  # Enable logging
+            engineio_logger=True  # Enable engine.io logging
+        )
+        
+        # Set up event handlers
         self.sio.on('connect', self.on_connect)
         self.sio.on('disconnect', self.on_disconnect)
         self.sio.on('registration_confirmed', self.on_registration_confirmed)
