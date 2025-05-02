@@ -1,19 +1,15 @@
 [Unit]
-Description=Mass Development Server
+Description=StreamOSC Flask App (Gunicorn + Eventlet)
 After=network.target
 
 [Service]
-User=massdev
-Group=massdev
-WorkingDirectory=/opt/massdevserver
-Environment="PATH=/opt/massdevserver/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="PYTHONPATH=/opt/massdevserver"
-Environment="PYTHONUNBUFFERED=1"
-Environment="FLASK_APP=streamosc.py"
-Environment="FLASK_ENV=production"
-ExecStart=/opt/massdevserver/venv/bin/python -m flask run --host=0.0.0.0 --port=7401
+User=www-data
+WorkingDirectory=/var/www/myapp/massdevserver
+Environment="PATH=/var/www/myapp/massdevserver/venv/bin"
+ExecStart=/var/www/myapp/massdevserver/venv/bin/gunicorn --worker-class eventlet -w 4 -b 0.0.0.0:80 streamosc:app
 Restart=always
-RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
-WantedBy=multi-user.target 
+WantedBy=multi-user.target

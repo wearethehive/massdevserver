@@ -14,9 +14,11 @@ from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 import sys
 from datetime import datetime
+from flask_caching import Cache
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging - reduce logging overhead in production
+log_level = os.environ.get('LOG_LEVEL', 'WARNING')
+logging.basicConfig(level=getattr(logging, log_level), format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Log basic startup information
@@ -24,7 +26,6 @@ logger.info(f"Starting server process ID: {os.getpid()}")
 
 # Load environment variables
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-logger.info(f"Loading environment variables from: {env_path}")
 load_dotenv(env_path)
 
 # Check if the .env file exists
@@ -63,9 +64,17 @@ app = Flask(__name__)
 # Use environment variable for secret key
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key')
 
+# Configure caching
+cache_config = {
+    'CACHE_TYPE': 'simple',
+    'CACHE_DEFAULT_TIMEOUT': 300
+}
+app.config.from_mapping(cache_config)
+cache = Cache(app)
+
 # Configure CORS to only allow specific origins
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='threading', ping_timeout=60, ping_interval=25)
 
 # Configure rate limiting
 limiter = Limiter(
@@ -74,23 +83,18 @@ limiter = Limiter(
     default_limits=["200 per day", "50 per hour"]
 )
 
-# Configure logging
-log_level = os.environ.get('LOG_LEVEL', 'WARNING')
-log_file = os.environ.get('LOG_FILE', 'server.log')
-
 # Create logs directory if it doesn't exist
-if not os.path.exists('logs'):
-    os.makedirs('logs', exist_ok=True)
+log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir, exist_ok=True)
 
-logging.basicConfig(
-    level=getattr(logging, log_level),
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(log_file)
-    ]
-)
-logger = logging.getLogger(__name__)
+log_file = os.path.join(log_dir, 'server.log')
+
+# Configure file logging only if needed
+if log_level == 'DEBUG':
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
 
 # Configure all relevant transport loggers
 transport_loggers = [
@@ -179,8 +183,18 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Cache the OSC clients to avoid recreating them
+osc_clients_cache = {}
+
+def get_osc_clients():
+    """Get or create OSC clients for the current destinations"""
+    cache_key = json.dumps(destinations, sort_keys=True)
+    if cache_key not in osc_clients_cache:
+        osc_clients_cache[cache_key] = [udp_client.SimpleUDPClient(dest["ip"], dest["port"]) for dest in destinations]
+    return osc_clients_cache[cache_key]
+
 def send_random_osc_messages():
-    clients = [udp_client.SimpleUDPClient(dest["ip"], dest["port"]) for dest in destinations]
+    clients = get_osc_clients()
     logger.info(f"Created OSC clients for destinations: {destinations}")
     
     while is_sending:
@@ -194,7 +208,8 @@ def send_random_osc_messages():
             # Send the OSC message to all destinations
             for client in clients:
                 client.send_message(address, value)
-                logger.debug(f"Sent OSC message to {client._address}:{client._port} - {address}: {value}")
+                if verbose_mode:
+                    logger.debug(f"Sent OSC message to {client._address}:{client._port} - {address}: {value}")
             
             # Notify connected clients about the message
             message_data = {
@@ -241,6 +256,7 @@ def index():
 @app.route('/api/status')
 @limiter.limit("10 per minute")
 @require_api_key
+@cache.cached(timeout=5)  # Cache for 5 seconds
 def get_status():
     return jsonify({
         'is_sending': is_sending,
@@ -255,6 +271,7 @@ def get_status():
 @app.route('/api/receivers')
 @limiter.limit("10 per minute")
 @require_api_key
+@cache.cached(timeout=5)  # Cache for 5 seconds
 def get_receivers():
     return jsonify({
         'receivers': get_receivers_list()
