@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timedelta
 from flask_caching import Cache
 import io
+from aiohttp import web
 
 # Configure logging - reduce logging overhead in production
 log_level = os.environ.get('LOG_LEVEL', 'INFO')  # Changed default to INFO

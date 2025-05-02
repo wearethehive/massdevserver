@@ -137,8 +137,26 @@ class OSCRelayClient(QObject):
     status_signal = Signal(str)
     message_signal = Signal(str)
 
+    def load_config(self, config_path):
+        """Load configuration from file"""
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                logger.info(f"Loaded config from file: {config}")
+                return config
+        except Exception as e:
+            logger.error(f"Error loading config: {e}")
+            return {
+                'server_url': DEFAULT_SERVER_URL,
+                'api_key': DEFAULT_API_KEY,
+                'receiver_name': socket.gethostname(),
+                'local_ip': '127.0.0.1',
+                'local_port': DEFAULT_LOCAL_PORT
+            }
+
     def __init__(self, config_path='config.json'):
         """Initialize the OSC relay client"""
+        super().__init__()
         self.config = self.load_config(config_path)
         self.sio = socketio.Client(
             reconnection=True,
@@ -147,17 +165,30 @@ class OSCRelayClient(QObject):
             reconnection_delay_max=5000,
             logger=True,
             engineio_logger=True,
-            handle_sigint=True
+            handle_sigint=True,
+            transports=['websocket', 'polling'],  # Specify allowed transports
+            upgrade=True,  # Allow WebSocket upgrades
+            ping_timeout=60,  # Increased timeout for proxied connections
+            ping_interval=25,  # Increased interval for proxied connections
+            max_http_buffer_size=1e8  # Increased buffer size for large messages
         )
         self.osc_sender = None
         self.osc_receiver = None
         self.connection_lock = threading.Lock()
+        self.signal_lock = threading.Lock()
         self.is_connected = False
         self.is_registered = False
         self.receiver_id = None
         self.receiver_name = self.config.get('receiver_name', 'Unnamed Receiver')
         self.api_key = self.config.get('api_key', '')
         self.server_url = self.config.get('server_url', 'http://localhost:7401')
+        self.running = False
+        self.thread = None
+        self.was_manually_disconnected = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay = 1
+        self.max_reconnect_delay = 30
         
         # Set up event handlers
         self.sio.on('connect', self.on_connect)
@@ -210,28 +241,24 @@ class OSCRelayClient(QObject):
         """Main client loop"""
         try:
             with self.connection_lock:
-                if self.is_connecting:
-                    logger.info("Connection attempt already in progress")
+                if self.is_connected:
+                    logger.info("Already connected to server")
                     return
-                self.is_connecting = True
-
-            # Connect with API key in query parameters
-            logger.info(f"Connecting to server {self.server_url} with API key: {self.api_key}")
-            
-            # Only include API key in auth if it's not empty
-            auth_data = {}
-            if self.api_key and self.api_key.strip():
-                auth_data = {'api_key': self.api_key}
-            
-            logger.info(f"Auth data: {auth_data}")
-            
-            # Check if already connected before attempting to connect
-            if not self.sio.connected:
+                
+                # Connect with API key in query parameters
+                logger.info(f"Connecting to server {self.server_url} with API key: {self.api_key}")
+                
+                # Only include API key in auth if it's not empty
+                auth_data = {}
+                if self.api_key and self.api_key.strip():
+                    auth_data = {'api_key': self.api_key}
+                
+                logger.info(f"Auth data: {auth_data}")
+                
                 try:
                     self.sio.connect(self.server_url, auth=auth_data, wait_timeout=5)
                     logger.info(f"Connected to server: {self.server_url}")
                     self.safe_emit_status(f"Connected to {self.server_url}")
-                    self.start_time = time.time()
                     self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
                 except Exception as e:
                     logger.error(f"Failed to connect: {e}")
@@ -249,9 +276,6 @@ class OSCRelayClient(QObject):
                             logger.error("Max reconnection attempts reached")
                             self.safe_emit_status("Max reconnection attempts reached. Please check your connection and try again.")
                             self.stop()
-            else:
-                logger.info("Already connected to server")
-                self.safe_emit_status("Already connected to server")
             
             while self.running:
                 time.sleep(0.1)
@@ -259,7 +283,8 @@ class OSCRelayClient(QObject):
             logger.error(f"Error in run loop: {e}")
             self.safe_emit_status(f"Error: {e}")
         finally:
-            self.is_connecting = False
+            self.is_connected = False
+            # Only release the lock if we acquired it
             if self.connection_lock.locked():
                 self.connection_lock.release()
             self.safe_emit_status("Stopped")
@@ -267,14 +292,14 @@ class OSCRelayClient(QObject):
     def on_connect(self):
         """Handle successful connection to server"""
         logger.info(f"Connected to server: {self.server_url}")
-        self.connected = True
+        self.is_connected = True
         
         # Register as a receiver after successful connection
         try:
             if self.sio.connected:
                 logger.info("Registering as receiver...")
                 self.sio.emit('register_receiver', {
-                    'name': self.name,
+                    'name': self.receiver_name,
                     'api_key': self.api_key
                 })
                 logger.info("Registration request sent")
@@ -283,7 +308,7 @@ class OSCRelayClient(QObject):
         except Exception as e:
             logger.error(f"Error during registration: {e}")
         finally:
-            # Always release the lock in a finally block
+            # Only release the lock if we acquired it
             if self.connection_lock.locked():
                 self.connection_lock.release()
 
@@ -344,7 +369,7 @@ class OSCRelayClient(QObject):
             if status == 'connected' and not self.receiver_id and self.sio.connected:
                 logger.info("Connected but not registered, attempting registration...")
                 self.sio.emit('register_receiver', {
-                    'name': self.name,
+                    'name': self.receiver_name,
                     'api_key': self.api_key
                 })
         except Exception as e:
@@ -470,9 +495,9 @@ if PySide6:
             # Server URL input with status indicator
             server_layout = QHBoxLayout()
             server_layout.addWidget(QLabel('Server URL:'))
-            self.server_input = QLineEdit(self.config.get('server_url', DEFAULT_SERVER_URL))
-            self.server_input.setToolTip(f"The URL of the OSC Relay Server (default port: {DEFAULT_SERVER_PORT})")
-            server_layout.addWidget(self.server_input)
+            self.server_url_input = QLineEdit(self.config.get('server_url', DEFAULT_SERVER_URL))
+            self.server_url_input.setToolTip(f"The URL of the OSC Relay Server (default port: {DEFAULT_SERVER_PORT})")
+            server_layout.addWidget(self.server_url_input)
             self.status_indicator = StatusIndicator()
             server_layout.addWidget(self.status_indicator)
             layout.addLayout(server_layout)
@@ -526,13 +551,13 @@ if PySide6:
 
             # Buttons
             btn_layout = QHBoxLayout()
-            self.start_btn = QPushButton("Start")
-            self.start_btn.setToolTip("Start receiving OSC messages")
-            self.stop_btn = QPushButton("Stop")
-            self.stop_btn.setToolTip("Stop receiving OSC messages")
-            self.stop_btn.setEnabled(False)
-            btn_layout.addWidget(self.start_btn)
-            btn_layout.addWidget(self.stop_btn)
+            self.start_button = QPushButton("Start")
+            self.start_button.setToolTip("Start receiving OSC messages")
+            self.stop_button = QPushButton("Stop")
+            self.stop_button.setToolTip("Stop receiving OSC messages")
+            self.stop_button.setEnabled(False)
+            btn_layout.addWidget(self.start_button)
+            btn_layout.addWidget(self.stop_button)
             layout.addLayout(btn_layout)
 
             # Status
@@ -573,8 +598,8 @@ if PySide6:
 
             self.setLayout(layout)
 
-            self.start_btn.clicked.connect(self.start_client)
-            self.stop_btn.clicked.connect(self.stop_client)
+            self.start_button.clicked.connect(self.start_client)
+            self.stop_button.clicked.connect(self.stop_client)
 
         def restore_settings(self):
             geometry = self.settings.value('geometry')
@@ -585,7 +610,7 @@ if PySide6:
             self.settings.setValue('geometry', self.geometry())
             
             # Update config with current values
-            self.config['server_url'] = self.server_input.text()
+            self.config['server_url'] = self.server_url_input.text()
             self.config['api_key'] = self.api_key_input.text()
             self.config['client_name'] = self.name_input.text()
             self.config['local_ip'] = self.local_ip_input.text()
@@ -630,68 +655,62 @@ if PySide6:
             dialog.exec()
 
         def start_client(self):
-            server_url = self.server_input.text().strip()
-            api_key = self.api_key_input.text().strip() or DEFAULT_API_KEY
-            name = self.name_input.text().strip() or 'OSC Relay Client'
-            local_ip = self.local_ip_input.text().strip()
-            local_port = self.local_port_input.text().strip()
-
-            logger.info(f"Starting client with server_url: {server_url}")
-            logger.info(f"API key: {api_key}")
-            logger.info(f"Name: {name}")
-            logger.info(f"Local IP: {local_ip}")
-            logger.info(f"Local Port: {local_port}")
-
-            if not server_url.startswith('http://') and not server_url.startswith('https://'):
-                server_url = 'http://' + server_url
-
+            """Start the OSC relay client"""
             try:
-                local_port_int = int(local_port)
-            except ValueError:
-                self.status_label.setText('Status: Invalid OSC port')
-                return
-
-            # Create config dictionary
-            config = {
-                'server_url': server_url,
-                'api_key': api_key,
-                'receiver_name': name,
-                'local_ip': local_ip,
-                'local_port': local_port_int
-            }
-
-            # Save config to file
-            config_path = os.path.join(CONFIG_DIR, 'client_config.json')
-            try:
+                # Create config directory if it doesn't exist
+                os.makedirs('config', exist_ok=True)
+                
+                # Create configuration dictionary
+                config = {
+                    'server_url': self.server_url_input.text(),
+                    'api_key': self.api_key_input.text(),
+                    'receiver_name': self.name_input.text(),
+                    'local_ip': self.local_ip_input.text(),
+                    'local_port': int(self.local_port_input.text()),
+                    'client_name': self.name_input.text()
+                }
+                
+                # Save configuration to file
+                config_path = os.path.join('config', 'client_config.json')
                 with open(config_path, 'w') as f:
                     json.dump(config, f, indent=4)
                 logger.info(f"Saved config to {config_path}")
+                
+                # Initialize client with config file
+                self.client = OSCRelayClient(config_path)
+                
+                # Connect signals
+                self.client.status_signal.connect(self.update_status)
+                self.client.message_signal.connect(self.add_message)
+                
+                # Start client
+                self.client.start()
+                
+                # Update UI
+                self.start_button.setEnabled(False)
+                self.stop_button.setEnabled(True)
+                self.server_url_input.setEnabled(False)
+                self.api_key_input.setEnabled(False)
+                self.name_input.setEnabled(False)
+                self.local_ip_input.setEnabled(False)
+                self.local_port_input.setEnabled(False)
+                
             except Exception as e:
-                logger.error(f"Error saving config: {e}")
-                self.status_label.setText(f'Status: Error saving config - {str(e)}')
-                return
-
-            # Initialize client with config file
-            self.client = OSCRelayClient(config_path)
-            self.client.status_signal.connect(self.update_status)
-            self.client.message_signal.connect(self.add_message)
-            self.client.start()
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
-            self.status_label.setText('Status: Starting...')
+                logger.error(f"Error starting client: {e}")
+                self.status_label.setText(f"Error: {str(e)}")
 
         def stop_client(self):
             if self.client:
                 self.client.stop()
                 self.client = None
-            self.start_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
             self.status_label.setText('Status: Stopped')
 
         def test_api_key(self):
             """Test the API key"""
             api_key = self.api_key_input.text().strip() or DEFAULT_API_KEY
-            server_url = self.server_input.text().strip()
+            server_url = self.server_url_input.text().strip()
             
             if not server_url.startswith('http://') and not server_url.startswith('https://'):
                 server_url = 'http://' + server_url
