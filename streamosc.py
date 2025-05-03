@@ -47,7 +47,14 @@ def get_receivers_list():
 
 @app.route('/')
 def index():
-    return render_template('index.html', api_key=API_KEYS[0])
+    try:
+        logger.info("Serving index.html")
+        path = os.path.abspath(os.path.join(app.template_folder, 'index.html'))
+        logger.info(f"Resolved index.html path: {path}")
+        return render_template('index.html', api_key=API_KEYS[0])
+    except Exception as e:
+        logger.exception("Failed to render index.html")
+        return "Internal Server Error", 500
 
 @socketio.on('connect')
 def handle_connect(auth):
