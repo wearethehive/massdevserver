@@ -79,20 +79,34 @@ cache = Cache(app)
 
 # Configure CORS to only allow specific origins
 allowed_origins = [origin.strip() for origin in os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')]
-# Add the client's IP to allowed origins
-client_ip = os.environ.get('CLIENT_IP', '172.16.17.31')
-allowed_origins.append(f'http://{client_ip}:7401')
+# Add required origins
+allowed_origins.extend([
+    'https://massdev.one',
+    'http://massdev.one',
+    'http://172.16.17.31:7401',
+    'https://172.16.17.31:7401',
+    'https://massdev.one:7401',
+    'http://massdev.one:7401'
+])
+# Remove duplicates while preserving order
+allowed_origins = list(dict.fromkeys(allowed_origins))
 logger.info(f"Allowed origins: {allowed_origins}")
-socketio = SocketIO(app, 
-                   cors_allowed_origins=allowed_origins,
-                   async_mode='eventlet',
-                   ping_timeout=60,
-                   ping_interval=25,
-                   max_http_buffer_size=1e8,
-                   allow_upgrades=True,
-                   transports=['websocket', 'polling'],
-                   engineio_logger=True,
-                   manage_session=False)
+
+# Initialize Socket.IO with proper settings
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=allowed_origins,
+    async_mode='eventlet',
+    ping_timeout=60,
+    ping_interval=25,
+    max_http_buffer_size=int(1e8),  # Convert to int explicitly
+    allow_upgrades=True,
+    websocket=True,
+    transports=['websocket', 'polling'],
+    engineio_logger=True,
+    logger=True,
+    manage_session=False
+)
 
 # Configure rate limiting
 limiter = Limiter(
@@ -910,18 +924,6 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7401))
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
-    # Configure Socket.IO with proper settings for NPM
-    socketio.init_app(app, 
-                     cors_allowed_origins=['*'],
-                     async_mode='eventlet',
-                     ping_timeout=60,
-                     ping_interval=25,
-                     max_http_buffer_size=1e8,
-                     allow_upgrades=True,
-                     transports=['websocket', 'polling'],
-                     engineio_logger=True,
-                     manage_session=False)
-    
     # Add middleware to handle proxy headers
     @app.before_request
     def fix_proxy():
@@ -929,12 +931,6 @@ if __name__ == '__main__':
             request.environ['REMOTE_ADDR'] = request.headers['X-Forwarded-For'].split(',')[0]
         if 'X-Forwarded-Proto' in request.headers:
             request.environ['wsgi.url_scheme'] = request.headers['X-Forwarded-Proto']
-    
-    # Only run the Flask development server if not using Gunicorn
-    if not os.environ.get('GUNICORN_CMD_ARGS'):
-        socketio.run(app, 
-                    host=host, 
-                    port=port, 
-                    debug=debug, 
-                    use_reloader=True,
-                    allow_unsafe_werkzeug=True)
+            
+    # Run the server
+    socketio.run(app, host=host, port=port, debug=debug)

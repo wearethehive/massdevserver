@@ -20,6 +20,7 @@ import os
 import threading
 import socket
 from dotenv import load_dotenv
+import urllib.parse
 
 # Load environment variables
 load_dotenv()
@@ -182,8 +183,25 @@ class OSCRelayClient(QObject):
             reconnection_delay_max=5000,
             randomization_factor=0.5,
             logger=True,
-            engineio_logger=True
+            engineio_logger=True,
+            websocket=True,
+            transports=['websocket', 'polling']
         )
+        
+        # Configure additional Socket.IO options
+        self.sio.eio.max_http_buffer_size = int(1e8)
+        
+        # Set dynamic origin based on server URL
+        server_url = self.config.get('server_url', 'http://localhost:7401')
+        parsed_url = urllib.parse.urlparse(server_url)
+        origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        # Set the headers with dynamic origin
+        self.sio.eio.headers = {
+            'Origin': origin,
+            'X-Forwarded-Proto': parsed_url.scheme,
+            'X-Forwarded-For': socket.gethostbyname(socket.gethostname())
+        }
         self.osc_sender = None
         self.osc_receiver = None
         self.connection_lock = threading.Lock()
