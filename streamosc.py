@@ -32,6 +32,8 @@ current_addresses = []
 is_sending = False
 send_thread = None
 message_queue = deque(maxlen=100)
+interval_min = 1.0
+interval_max = 5.0
 
 # Logger setup
 logger = logging.getLogger()
@@ -57,7 +59,9 @@ def index():
             destinations=destinations or [],
             addresses=current_addresses or [],
             is_sending=is_sending or False,
-            receivers=get_receivers_list() or []
+            receivers=get_receivers_list() or [],
+            interval_min=interval_min,
+            interval_max=interval_max
         )
     except Exception as e:
         logger.exception("Failed to render index.html")
@@ -79,9 +83,11 @@ def handle_connect(auth):
         'is_sending': is_sending,
         'destinations': destinations,
         'addresses': current_addresses,
+        'interval_min': interval_min,
+        'interval_max': interval_max,
         'receivers': get_receivers_list()
     }, room=client_id)
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, namespace='/')
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -92,7 +98,7 @@ def handle_disconnect():
     to_remove = [rid for rid, r in registered_receivers.items() if r['socket_id'] == client_id]
     for rid in to_remove:
         registered_receivers.pop(rid)
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, namespace='/')
 
 @socketio.on('register_receiver')
 @limiter.limit("10 per minute")
@@ -117,7 +123,7 @@ def handle_register_receiver(data):
     }
     join_room(receiver_id)
     emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, namespace='/')
 
 @socketio.on('unregister_receiver')
 @limiter.limit("10 per minute")
@@ -133,7 +139,7 @@ def handle_unregister_receiver(data):
     registered_receivers.pop(receiver_id)
     leave_room(receiver_id)
     emit('unregistration_confirmed', {'message': 'Unregistered'})
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, namespace='/')
 
 @socketio.on('update_config')
 def handle_update_config(data):
@@ -147,15 +153,19 @@ def handle_queue_message(data):
     message_queue.append(data)
 
 @socketio.on('start_sending')
-def handle_start_sending():
-    global is_sending, send_thread
+def handle_start_sending(data):
+    global is_sending, send_thread, interval_min, interval_max, destinations, current_addresses
     is_sending = True
+    interval_min = data.get('interval_min', 1.0)
+    interval_max = data.get('interval_max', 5.0)
+    destinations = data.get('destinations', [])
+    current_addresses = data.get('addresses', [])
     if not send_thread:
         send_thread = socketio.start_background_task(target=relay_messages)
     emit('sending_status', {'status': 'started'})
 
 @socketio.on('stop_sending')
-def handle_stop_sending():
+def handle_stop_sending(data):
     global is_sending
     is_sending = False
     emit('sending_status', {'status': 'stopped'})
