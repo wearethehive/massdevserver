@@ -183,9 +183,7 @@ class OSCRelayClient(QObject):
             reconnection_delay_max=5000,
             randomization_factor=0.5,
             logger=True,
-            engineio_logger=True,
-            websocket=True,
-            transports=['websocket', 'polling']
+            engineio_logger=True
         )
         
         # Configure additional Socket.IO options
@@ -198,10 +196,9 @@ class OSCRelayClient(QObject):
         
         # Set the headers with dynamic origin
         self.sio.eio.headers = {
-            'Origin': origin,
-            'X-Forwarded-Proto': parsed_url.scheme,
-            'X-Forwarded-For': socket.gethostbyname(socket.gethostname())
+            'Origin': 'https://massdev.one'
         }
+
         self.osc_sender = None
         self.osc_receiver = None
         self.connection_lock = threading.Lock()
@@ -274,31 +271,19 @@ class OSCRelayClient(QObject):
         else:
             self.safe_emit_status("Stopped")
 
-    def run(self):
         """Main client loop"""
         try:
             with self.connection_lock:
                 if self.is_connected:
                     logger.info("Already connected to server")
                     return
-                
-                # Test connection first
+
                 try:
-                    logger.info(f"Testing connection to {self.server_url}/socket.io/")
-                    response = requests.get(f"{self.server_url}/socket.io/", verify=False)
-                    logger.info(f"Test connection response: {response.status_code}")
-                    if response.status_code != 200:
-                        logger.error(f"Test connection failed with status {response.status_code}")
-                        logger.error(f"Response content: {response.text}")
-                        raise Exception(f"Test connection failed with status {response.status_code}")
-                    logger.info("Test connection successful")
-                    
-                    # Connect to Socket.IO server
-                    logger.info(f"Connecting to Socket.IO server at {self.server_url}")
+                    logger.info("Attempting Socket.IO connection...")
                     self.sio.connect(self.server_url, 
-                                    auth={'api_key': self.api_key},
-                                    namespaces=['/'],
-                                    wait_timeout=10)
+                                     auth={'api_key': self.api_key},
+                                     namespaces=['/'],
+                                     wait_timeout=10)
                     logger.info("Socket.IO connection established")
                 except Exception as e:
                     logger.error(f"Failed to connect: {str(e)}")
@@ -316,7 +301,7 @@ class OSCRelayClient(QObject):
                             logger.error("Max reconnection attempts reached")
                             self.safe_emit_status("Max reconnection attempts reached. Please check your connection and try again.")
                             self.stop()
-            
+
             while self.running and not self.stop_event.is_set():
                 time.sleep(0.1)
         except Exception as e:
@@ -324,10 +309,65 @@ class OSCRelayClient(QObject):
             self.safe_emit_status(f"Error: {e}")
         finally:
             self.is_connected = False
-            # Only release the lock if we acquired it
             if self.connection_lock.locked():
                 self.connection_lock.release()
             self.safe_emit_status("Stopped")
+
+    def run(self):
+        """Main client loop"""
+        try:
+            with self.connection_lock:
+                if self.is_connected:
+                    logger.info("Already connected to server")
+                    return
+
+                try:
+                    logger.info("Attempting Socket.IO connection...")
+                    self.sio.connect(self.server_url, 
+                                     auth={'api_key': self.api_key},
+                                     namespaces=['/'],
+                                     wait_timeout=10,
+                                     transports=['websocket'])
+                    logger.info("Socket.IO connection established")
+                except Exception as e:
+                    logger.error(f"Failed to connect: {str(e)}")
+                    self.safe_emit_status(f"Failed to connect: {str(e)}")
+                    if self.running and not self.was_manually_disconnected:
+                        self.reconnect_attempts += 1
+                        if self.reconnect_attempts <= self.max_reconnect_attempts:
+                            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
+                            logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                            self.safe_emit_status(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+                            time.sleep(delay)
+                            if self.running and not self.stop_event.is_set():
+                                self.run()
+                        else:
+                            logger.error("Max reconnection attempts reached")
+                            self.safe_emit_status("Max reconnection attempts reached. Please check your connection and try again.")
+                            self.stop()
+
+            while self.running and not self.stop_event.is_set():
+                time.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Error in run loop: {e}")
+            self.safe_emit_status(f"Error: {e}")
+        finally:
+            self.is_connected = False
+            if self.connection_lock:
+                try:
+                    self.connection_lock.release()
+                except RuntimeError:
+                    pass  # Lock already released
+            self.safe_emit_status("Stopped")
+
+    def on_connect(self):
+        logger.info("Connected to server.")
+        self.is_connected = True
+        logger.info(f"Socket.IO client connected? {self.sio.connected}")
+        self.sio.emit('register_receiver', {
+            'name': self.receiver_name,
+            'api_key': self.api_key
+        })
 
     def on_connect(self):
         """Handle successful connection to server"""
