@@ -20,6 +20,8 @@ import sys
 from datetime import datetime, timedelta
 from flask_caching import Cache
 import io
+import asyncio
+import websockets
 
 # Configure logging - reduce logging overhead in production
 log_level = os.environ.get('LOG_LEVEL', 'INFO')  # Changed default to INFO
@@ -918,6 +920,152 @@ for task in background_tasks:
     task_thread = threading.Thread(target=task, daemon=True)
     task_thread.start()
 
+async def handle_websocket(websocket, path):
+    client_id = str(uuid.uuid4())
+    connected_clients.add(client_id)
+    
+    try:
+        # Authentication
+        auth_data = await websocket.recv()
+        auth = json.loads(auth_data)
+        
+        if 'api_key' not in auth or auth['api_key'] not in API_KEYS:
+            await websocket.send(json.dumps({
+                'type': 'error',
+                'message': 'Invalid API key'
+            }))
+            await websocket.close()
+            return
+            
+        # Send initial status
+        await websocket.send(json.dumps({
+            'type': 'status',
+            'status': 'connected',
+            'message': 'Connected to server',
+            'is_sending': is_sending,
+            'receivers': list(registered_receivers.keys())
+        }))
+        
+        # Broadcast new client
+        await broadcast_client_list()
+        
+        # Main message loop
+        async for message in websocket:
+            data = json.loads(message)
+            
+            if data['type'] == 'register':
+                # Handle receiver registration
+                receiver_id = str(uuid.uuid4())
+                registered_receivers[receiver_id] = {
+                    'name': data.get('name', 'Unnamed Receiver'),
+                    'client_id': client_id,
+                    'websocket': websocket
+                }
+                
+                await websocket.send(json.dumps({
+                    'type': 'registration_confirmed',
+                    'receiver_id': receiver_id
+                }))
+                
+                await broadcast_receiver_list()
+                
+            elif data['type'] == 'osc':
+                # Handle OSC messages
+                address = data.get('address')
+                value = data.get('value')
+                
+                if address and value is not None:
+                    # Send to all registered receivers
+                    for receiver_id, receiver in registered_receivers.items():
+                        try:
+                            await receiver['websocket'].send(json.dumps({
+                                'type': 'osc',
+                                'address': address,
+                                'value': value
+                            }))
+                        except:
+                            # Queue message if receiver is offline
+                            if receiver_id not in message_queue:
+                                message_queue[receiver_id] = []
+                            message_queue[receiver_id].append({
+                                'address': address,
+                                'value': value
+                            })
+                            
+            elif data['type'] == 'start_sending':
+                # Handle start sending command
+                global is_sending, send_thread
+                if not is_sending:
+                    is_sending = True
+                    send_thread = threading.Thread(target=send_random_osc_messages)
+                    send_thread.start()
+                    
+                    await broadcast_status_update()
+                    
+            elif data['type'] == 'stop_sending':
+                # Handle stop sending command
+                global is_sending
+                is_sending = False
+                await broadcast_status_update()
+                
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        # Cleanup
+        if client_id in connected_clients:
+            connected_clients.remove(client_id)
+            
+        # Remove from registered receivers
+        for receiver_id, receiver in list(registered_receivers.items()):
+            if receiver['client_id'] == client_id:
+                del registered_receivers[receiver_id]
+                
+        await broadcast_client_list()
+        await broadcast_receiver_list()
+
+async def broadcast_client_list():
+    client_list = list(connected_clients)
+    for client in connected_clients:
+        try:
+            await client.send(json.dumps({
+                'type': 'client_list_update',
+                'clients': client_list
+            }))
+        except:
+            pass
+
+async def broadcast_receiver_list():
+    receiver_list = [{
+        'id': rid,
+        'name': r['name']
+    } for rid, r in registered_receivers.items()]
+    
+    for client in connected_clients:
+        try:
+            await client.send(json.dumps({
+                'type': 'receiver_list_update',
+                'receivers': receiver_list
+            }))
+        except:
+            pass
+
+async def broadcast_status_update():
+    for client in connected_clients:
+        try:
+            await client.send(json.dumps({
+                'type': 'status',
+                'status': 'connected',
+                'is_sending': is_sending,
+                'receivers': list(registered_receivers.keys())
+            }))
+        except:
+            pass
+
+# Start WebSocket server
+async def start_websocket_server():
+    server = await websockets.serve(handle_websocket, '0.0.0.0', 7401)
+    await server.wait_closed()
+
 if __name__ == '__main__':
     # Use environment variables for host and port
     host = os.environ.get('HOST', '0.0.0.0')
@@ -933,4 +1081,5 @@ if __name__ == '__main__':
             request.environ['wsgi.url_scheme'] = request.headers['X-Forwarded-Proto']
             
     # Run the server
-    socketio.run(app, host=host, port=port, debug=debug)
+    asyncio.get_event_loop().run_until_complete(start_websocket_server())
+    asyncio.get_event_loop().run_forever()

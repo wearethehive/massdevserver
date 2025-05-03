@@ -21,6 +21,12 @@ import threading
 import socket
 from dotenv import load_dotenv
 import urllib.parse
+import asyncio
+import websockets
+from pythonosc import udp_client
+from pythonosc import osc_message_builder
+from pythonosc import osc_bundle_builder
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -137,377 +143,115 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class OSCRelayClient(QObject):
-    status_signal = Signal(str)
-    message_signal = Signal(str)
-
-    def load_config(self, config_path):
-        """Load configuration from file"""
-        try:
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                # Ensure server_url is correct
-                if 'server_url' in config:
-                    url = config['server_url']
-                    if 'YOUR_SERVER_IP' in url:
-                        config['server_url'] = 'https://massdev.one'  # Use the correct domain
-                    elif not url.startswith(('http://', 'https://')):
-                        config['server_url'] = 'https://' + url  # Ensure HTTPS
-                logger.info(f"Loaded config from file: {config}")
-                return config
-        except Exception as e:
-            logger.error(f"Error loading config: {e}")
-            # Return default config
-            return {
-                'server_url': 'https://massdev.one',  # Use the correct domain
-                'api_key': '',
-                'receiver_name': 'default',
-                'local_ip': '127.0.0.1',
-                'local_port': 57120,
-                'client_name': 'default'
-            }
-
-    def __init__(self, config_path='config.json'):
-        """Initialize the OSC relay client"""
-        super().__init__()
-        self.config = self.load_config(config_path)
-        
-        # Configure requests to handle SSL properly
-        requests.packages.urllib3.disable_warnings()
-        
-        self.sio = socketio.Client(
-            ssl_verify=False,  # Temporarily disable SSL verification
-            reconnection=True,
-            reconnection_attempts=5,
-            reconnection_delay=1000,
-            reconnection_delay_max=5000,
-            randomization_factor=0.5,
-            logger=True,
-            engineio_logger=True
-        )
-        
-        # Configure additional Socket.IO options
-        self.sio.eio.max_http_buffer_size = int(1e8)
-        
-        # Set dynamic origin based on server URL
-        server_url = self.config.get('server_url', 'http://localhost:7401')
-        parsed_url = urllib.parse.urlparse(server_url)
-        origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        
-        # Set the headers with dynamic origin
-        self.sio.eio.headers = {
-            'Origin': 'https://massdev.one'
-        }
-
-        self.osc_sender = None
-        self.osc_receiver = None
-        self.connection_lock = threading.Lock()
-        self.signal_lock = threading.Lock()
-        self.is_connected = False
-        self.is_registered = False
+class OSCRelayClient:
+    def __init__(self, server_url, api_key, osc_port=57120):
+        self.server_url = server_url
+        self.api_key = api_key
+        self.osc_port = osc_port
+        self.websocket = None
+        self.connected = False
         self.receiver_id = None
-        self.receiver_name = self.config.get('receiver_name', 'Unnamed Receiver')
-        self.api_key = self.config.get('api_key', '')
-        self.server_url = self.config.get('server_url', 'http://localhost:7401')
-        self.running = False
-        self.thread = None
-        self.was_manually_disconnected = False
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
-        self.reconnect_delay = 1
-        self.max_reconnect_delay = 30
-        self.stop_event = threading.Event()  # Add stop event for clean shutdown
-        
-        # Set up event handlers
-        self.sio.on('connect', self.on_connect)
-        self.sio.on('disconnect', self.on_disconnect)
-        self.sio.on('registration_confirmed', self.on_registration_confirmed)
-        self.sio.on('registration_failed', self.on_registration_failed)
-        self.sio.on('status_update', self.on_status_update)
-        self.sio.on('error', self.on_error)
+        self.osc_client = udp_client.SimpleUDPClient("127.0.0.1", self.osc_port)
+        self.message_queue = []
+        self.is_sending = False
+        self.send_thread = None
 
-    def safe_emit_status(self, message):
-        """Safely emit status signal with thread safety"""
+    async def connect(self):
         try:
-            with self.signal_lock:
-                if self.running:  # Only emit if client is still running
-                    self.status_signal.emit(message)
-        except Exception as e:
-            logger.error(f"Error emitting status signal: {e}")
-
-    def safe_emit_message(self, message):
-        """Safely emit message signal with thread safety"""
-        try:
-            with self.signal_lock:
-                if self.running:  # Only emit if client is still running
-                    self.message_signal.emit(message)
-        except Exception as e:
-            logger.error(f"Error emitting message signal: {e}")
-
-    def start(self):
-        """Start the client"""
-        if not self.running:
-            self.running = True
-            self.thread = threading.Thread(target=self.run, daemon=True)
-            self.thread.start()
-
-    def stop(self):
-        """Stop the client"""
-        self.running = False
-        self.stop_event.set()  # Signal all threads to stop
-        self.was_manually_disconnected = True
-        
-        try:
-            if self.sio.connected:
-                self.sio.disconnect()
-        except Exception as e:
-            logger.error(f"Error during disconnect: {e}")
-        
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=5)  # Wait for thread to finish
-        
-        if self.was_manually_disconnected:
-            self.safe_emit_status("Stopped (manually disconnected)")
-        else:
-            self.safe_emit_status("Stopped")
-
-        """Main client loop"""
-        try:
-            with self.connection_lock:
-                if self.is_connected:
-                    logger.info("Already connected to server")
-                    return
-
-                try:
-                    logger.info("Attempting Socket.IO connection...")
-                    self.sio.connect(self.server_url, 
-                                     auth={'api_key': self.api_key},
-                                     namespaces=['/'],
-                                     wait_timeout=10)
-                    logger.info("Socket.IO connection established")
-                except Exception as e:
-                    logger.error(f"Failed to connect: {str(e)}")
-                    self.safe_emit_status(f"Failed to connect: {str(e)}")
-                    if self.running and not self.was_manually_disconnected:
-                        self.reconnect_attempts += 1
-                        if self.reconnect_attempts <= self.max_reconnect_attempts:
-                            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
-                            logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                            self.safe_emit_status(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                            time.sleep(delay)
-                            if self.running and not self.stop_event.is_set():
-                                self.run()
-                        else:
-                            logger.error("Max reconnection attempts reached")
-                            self.safe_emit_status("Max reconnection attempts reached. Please check your connection and try again.")
-                            self.stop()
-
-            while self.running and not self.stop_event.is_set():
-                time.sleep(0.1)
-        except Exception as e:
-            logger.error(f"Error in run loop: {e}")
-            self.safe_emit_status(f"Error: {e}")
-        finally:
-            self.is_connected = False
-            if self.connection_lock.locked():
-                self.connection_lock.release()
-            self.safe_emit_status("Stopped")
-
-    def run(self):
-        """Main client loop"""
-        try:
-            with self.connection_lock:
-                if self.is_connected:
-                    logger.info("Already connected to server")
-                    return
-
-                try:
-                    logger.info("Attempting Socket.IO connection...")
-                    self.sio.connect(self.server_url, 
-                                     auth={'api_key': self.api_key},
-                                     namespaces=['/'],
-                                     wait_timeout=10,
-                                     transports=['websocket'])
-                    logger.info("Socket.IO connection established")
-                except Exception as e:
-                    logger.error(f"Failed to connect: {str(e)}")
-                    self.safe_emit_status(f"Failed to connect: {str(e)}")
-                    if self.running and not self.was_manually_disconnected:
-                        self.reconnect_attempts += 1
-                        if self.reconnect_attempts <= self.max_reconnect_attempts:
-                            delay = min(self.reconnect_delay * (2 ** (self.reconnect_attempts - 1)), self.max_reconnect_delay)
-                            logger.info(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                            self.safe_emit_status(f"Reconnecting in {delay} seconds (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
-                            time.sleep(delay)
-                            if self.running and not self.stop_event.is_set():
-                                self.run()
-                        else:
-                            logger.error("Max reconnection attempts reached")
-                            self.safe_emit_status("Max reconnection attempts reached. Please check your connection and try again.")
-                            self.stop()
-
-            while self.running and not self.stop_event.is_set():
-                time.sleep(0.1)
-        except Exception as e:
-            logger.error(f"Error in run loop: {e}")
-            self.safe_emit_status(f"Error: {e}")
-        finally:
-            self.is_connected = False
-            if self.connection_lock:
-                try:
-                    self.connection_lock.release()
-                except RuntimeError:
-                    pass  # Lock already released
-            self.safe_emit_status("Stopped")
-
-    def on_connect(self):
-        logger.info("Connected to server.")
-        self.is_connected = True
-        logger.info(f"Socket.IO client connected? {self.sio.connected}")
-        self.sio.emit('register_receiver', {
-            'name': self.receiver_name,
-            'api_key': self.api_key
-        })
-
-    def on_connect(self):
-        """Handle successful connection to server"""
-        logger.info(f"Connected to server: {self.server_url}")
-        self.is_connected = True
-        
-        # Register as a receiver after successful connection
-        try:
-            if self.sio.connected:
-                logger.info("Registering as receiver...")
-                self.sio.emit('register_receiver', {
-                    'name': self.receiver_name,
-                    'api_key': self.api_key
-                })
-                logger.info("Registration request sent")
-            else:
-                logger.warning("Cannot register: Socket not connected")
-        except Exception as e:
-            logger.error(f"Error during registration: {e}")
-        finally:
-            # Only release the lock if we acquired it
-            if self.connection_lock.locked():
-                self.connection_lock.release()
-
-    def on_disconnect(self):
-        """Handle disconnection"""
-        logger.warning("Disconnected from server")
-        self.safe_emit_status("Disconnected from server")
-        
-        # Only attempt reconnection if not manually disconnected
-        if self.running and not self.was_manually_disconnected:
-            self.safe_emit_status("Disconnected from server. Reconnecting in 5s...")
-            time.sleep(5)
-            if self.running:
-                self.run()
-        elif self.was_manually_disconnected:
-            self.safe_emit_status("Manually disconnected. Please restart the client to reconnect.")
-
-    def on_registration_confirmed(self, data):
-        """Handle successful registration confirmation"""
-        try:
-            self.receiver_id = data.get('receiver_id')
-            if self.receiver_id:
-                logger.info(f"Successfully registered as receiver with ID: {self.receiver_id}")
-                # Join the receiver's room
-                self.sio.emit('join', {'room': self.receiver_id})
-                # Request current status
-                self.sio.emit('get_status', {'api_key': self.api_key})
-            else:
-                logger.warning("Registration confirmed but no receiver ID received")
-        except Exception as e:
-            logger.error(f"Error in registration confirmation handler: {e}")
-
-    def on_registration_failed(self, data):
-        """Handle registration failure"""
-        error_msg = data.get('error', 'Unknown error')
-        logger.error(f"Registration failed: {error_msg}")
-        logger.error(f"Registration data: {data}")
-        self.safe_emit_status(f"Registration failed: {error_msg}")
-        self.was_manually_disconnected = True
-        self.stop()
-
-    def on_status_update(self, data):
-        """Handle status updates from server"""
-        try:
-            status = data.get('status', '')
-            message = data.get('message', '')
-            is_sending = data.get('is_sending', False)
-            receivers = data.get('receivers', [])
+            self.websocket = await websockets.connect(self.server_url)
+            self.connected = True
             
-            logger.info(f"Status update: {status} - {message}")
-            logger.info(f"Receivers: {receivers}")
-            logger.info(f"Is sending: {is_sending}")
+            # Send authentication
+            await self.websocket.send(json.dumps({
+                'type': 'auth',
+                'api_key': self.api_key
+            }))
             
-            # Update sending state
-            self.is_sending = is_sending
+            # Start message handling
+            asyncio.create_task(self.handle_messages())
             
-            # If we're connected but not registered, try to register
-            if status == 'connected' and not self.receiver_id and self.sio.connected:
-                logger.info("Connected but not registered, attempting registration...")
-                self.sio.emit('register_receiver', {
-                    'name': self.receiver_name,
-                    'api_key': self.api_key
-                })
+            logger.info("Connected to server")
+            return True
         except Exception as e:
-            logger.error(f"Error in status update handler: {e}")
+            logger.error(f"Connection error: {e}")
+            self.connected = False
+            return False
 
-    def on_error(self, data):
-        """Handle errors from server"""
-        error_msg = data.get('error', 'Unknown error')
-        logger.error(f"Error: {error_msg}")
-        self.safe_emit_status(f"Error: {error_msg}")
+    async def handle_messages(self):
+        try:
+            async for message in self.websocket:
+                data = json.loads(message)
+                
+                if data['type'] == 'error':
+                    logger.error(f"Server error: {data.get('message')}")
+                    
+                elif data['type'] == 'status':
+                    logger.info(f"Status update: {data.get('message')}")
+                    self.is_sending = data.get('is_sending', False)
+                    
+                elif data['type'] == 'registration_confirmed':
+                    self.receiver_id = data.get('receiver_id')
+                    logger.info(f"Registered as receiver: {self.receiver_id}")
+                    
+                elif data['type'] == 'osc':
+                    address = data.get('address')
+                    value = data.get('value')
+                    if address and value is not None:
+                        self.osc_client.send_message(address, value)
+                        
+                elif data['type'] == 'client_list_update':
+                    logger.info(f"Connected clients: {data.get('clients', [])}")
+                    
+                elif data['type'] == 'receiver_list_update':
+                    logger.info(f"Registered receivers: {data.get('receivers', [])}")
+                    
+        except Exception as e:
+            logger.error(f"Message handling error: {e}")
+            self.connected = False
+            await self.reconnect()
 
-    def on_relay_message(self, message):
-        """Handle incoming OSC messages"""
-        self.message_count += 1
-        msg = f"{message['address']} = {message['value']}"
-        logger.debug(f"Received OSC message: {msg}")
-        if self.osc_client:
+    async def reconnect(self):
+        while not self.connected:
             try:
-                self.osc_client.send_message(message['address'], message['value'])
+                logger.info("Attempting to reconnect...")
+                if await self.connect():
+                    break
+                await asyncio.sleep(5)
             except Exception as e:
-                logger.error(f"Failed to forward message: {e}")
-        self.safe_emit_message(msg)
+                logger.error(f"Reconnection error: {e}")
+                await asyncio.sleep(5)
 
-    def on_manual_disconnect(self, data):
-        """Handle manual disconnection from server"""
-        logger.info("Received manual disconnect from server")
-        self.safe_emit_status("Manually disconnected by server")
-        self.was_manually_disconnected = True
-        self.stop()
+    async def register_receiver(self, name="Unnamed Receiver"):
+        if self.connected:
+            await self.websocket.send(json.dumps({
+                'type': 'register',
+                'name': name
+            }))
 
-    def start_sending(self, destinations=None, addresses=None, interval_min=None, interval_max=None):
-        """Start sending OSC messages"""
-        if not self.sio.connected:
-            logger.error("Cannot start sending: Not connected to server")
-            self.safe_emit_status("Cannot start sending: Not connected to server")
-            return
-        
-        if not self.receiver_id:
-            logger.error("Cannot start sending: Not registered as receiver")
-            self.safe_emit_status("Cannot start sending: Not registered as receiver")
-            return
-        
-        data = {
-            'api_key': self.api_key,
-            'receiver_id': self.receiver_id
-        }
-        
-        if destinations:
-            data['destinations'] = destinations
-        if addresses:
-            data['addresses'] = addresses
-        if interval_min is not None:
-            data['interval_min'] = interval_min
-        if interval_max is not None:
-            data['interval_max'] = interval_max
-        
-        logger.info(f"Starting OSC message sending with data: {data}")
-        self.sio.emit('start_sending', data)
+    async def send_osc_message(self, address, value):
+        if self.connected:
+            await self.websocket.send(json.dumps({
+                'type': 'osc',
+                'address': address,
+                'value': value
+            }))
+
+    async def start_sending(self):
+        if self.connected:
+            await self.websocket.send(json.dumps({
+                'type': 'start_sending'
+            }))
+
+    async def stop_sending(self):
+        if self.connected:
+            await self.websocket.send(json.dumps({
+                'type': 'stop_sending'
+            }))
+
+    async def close(self):
+        if self.websocket:
+            await self.websocket.close()
+        self.connected = False
 
 # PySide6 GUI
 if PySide6:
@@ -793,7 +537,7 @@ if PySide6:
                     return
                 
                 # Create client with current config
-                self.client = OSCRelayClient(CONFIG_FILE)
+                self.client = OSCRelayClient(self.server_url_input.text(), self.api_key_input.text(), int(self.local_port_input.text()))
                 
                 # Connect signals
                 self.client.status_signal.connect(self.update_status)
@@ -975,15 +719,15 @@ def main():
            (config['local_ip'] is not None and config['local_port'] is None):
             logger.error("Both --local-ip and --local-port must be specified for forwarding")
             sys.exit(1)
-        client = OSCRelayClient(config_path)
+        client = OSCRelayClient(config['server_url'], config['api_key'], config['local_port'])
         client.status_signal.connect(lambda status: print(f"Status: {status}"))
         client.message_signal.connect(lambda msg: print(f"Message: {msg}"))
-        client.start()
+        asyncio.run(client.connect())
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            client.stop()
+            asyncio.run(client.close())
             print("Shutting down...")
 
 if __name__ == "__main__":
