@@ -1,128 +1,1074 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StreamOSC Interface</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.83/dist/themes/light.css">
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.83/dist/shoelace.js"></script>
-    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <title>Mass Development Server</title>
+    <!-- Preload critical resources -->
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" as="style">
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" as="script">
+    <!-- Load CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Load Socket.IO first -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <!-- Load other scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" defer></script>
+    <!-- Load non-critical CSS asynchronously -->
+    <link rel="stylesheet" href="/static/css/styles.css">
     <style>
+        /* Critical CSS only - move non-critical styles to a separate file */
         body {
-            font-family: Arial, sans-serif;
-            background-color: #181818;
-            color: #fff;
-            margin: 0;
-            padding: 0;
+            background-color: #212529;
+            color: #e9ecef;
+            transition: background-color 0.3s, color 0.3s;
         }
-        header {
-            background-color: #1f1f1f;
+
+        body[data-bs-theme="light"] {
+            background-color: #f8f9fa;
+            color: #212529;
+        }
+
+        .destination-card {
+            margin-bottom: 1rem;
             padding: 1rem;
-            text-align: center;
-            border-bottom: 1px solid #333;
+            border: 1px solid #495057;
+            border-radius: 0.25rem;
+            background-color: #2c3034;
+            transition: background-color 0.3s, border-color 0.3s;
         }
-        header h1 {
-            margin: 0;
-            font-size: 1.5rem;
-            color: #00ffae;
+
+        body[data-bs-theme="light"] .destination-card {
+            background-color: #ffffff;
+            border-color: #dee2e6;
         }
-        .container {
+
+        .status-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 10px;
+        }
+
+        .status-running {
+            background-color: #198754;
+            box-shadow: 0 0 10px #198754;
+        }
+
+        .status-stopped {
+            background-color: #dc3545;
+            box-shadow: 0 0 10px #dc3545;
+        }
+
+        .card {
+            background-color: #2c3034;
+            border: 1px solid #495057;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+
+        body[data-bs-theme="light"] .card {
+            background-color: #ffffff;
+            border-color: #dee2e6;
+        }
+
+        .list-group-item {
+            background-color: #2c3034;
+            border: 1px solid #495057;
+            color: #e9ecef;
+            transition: background-color 0.3s, border-color 0.3s, color 0.3s;
+        }
+
+        body[data-bs-theme="light"] .list-group-item {
+            background-color: #ffffff;
+            border-color: #dee2e6;
+            color: #212529;
+        }
+
+        .form-control {
+            background-color: #343a40;
+            border: 1px solid #495057;
+            color: #e9ecef;
+            transition: background-color 0.3s, border-color 0.3s, color 0.3s;
+        }
+
+        body[data-bs-theme="light"] .form-control {
+            background-color: #ffffff;
+            border-color: #dee2e6;
+            color: #212529;
+        }
+
+        .form-control:focus {
+            background-color: #343a40;
+            border-color: #0d6efd;
+            color: #e9ecef;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        }
+
+        body[data-bs-theme="light"] .form-control:focus {
+            background-color: #ffffff;
+            color: #212529;
+        }
+
+        .theme-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+
+        .address-item {
             display: flex;
-            flex-direction: column;
-            padding: 1rem;
-            gap: 1rem;
+            justify-content: space-between;
+            align-items: center;
         }
-        .panel {
-            background-color: #262626;
+
+        .address-item button {
+            margin-left: 10px;
+        }
+
+        .btn-primary {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+
+        .btn-primary:hover {
+            background-color: #0b5ed7;
+            border-color: #0a58ca;
+        }
+
+        .btn-success {
+            background-color: #198754;
+            border-color: #198754;
+        }
+
+        .btn-success:hover {
+            background-color: #157347;
+            border-color: #146c43;
+        }
+
+        .btn-danger {
+            background-color: #dc3545;
+            border-color: #dc3545;
+        }
+
+        .btn-danger:hover {
+            background-color: #bb2d3b;
+            border-color: #b02a37;
+        }
+
+        .interval-input {
+            width: 100px;
+        }
+
+        .message-log {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 1rem;
+            padding: 0.5rem;
+            background-color: #343a40;
+            border-radius: 0.25rem;
+        }
+
+        body[data-bs-theme="light"] .message-log {
+            background-color: #f8f9fa;
+        }
+
+        .message-item {
+            font-family: monospace;
+            margin-bottom: 0.25rem;
+            padding: 0.25rem;
+            border-radius: 0.25rem;
+            background-color: #495057;
+            color: #e9ecef;
+        }
+
+        body[data-bs-theme="light"] .message-item {
+            background-color: #e9ecef;
+            color: #212529;
+        }
+
+        .address-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            padding: 10px;
+            width: 100%;
+            min-height: 200px;
+            background-color: #2c3034;
             border-radius: 8px;
-            padding: 1rem;
-            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            margin: 0 auto;
         }
-        .panel h2 {
-            margin-top: 0;
-            color: #00d9ff;
+
+        .address-square {
+            aspect-ratio: 1;
+            background-color: #343a40;
+            border: 1px solid #495057;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 8px;
+            font-size: 0.85em;
+            word-break: break-word;
+            transition: background-color 0.3s ease;
+            cursor: pointer;
+            position: relative;
+            color: #e9ecef;
         }
-        pre, ul {
-            background-color: #1f1f1f;
-            padding: 1rem;
-            border-radius: 4px;
-            overflow-x: auto;
+
+        .address-square .remove-btn {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            font-size: 0.7em;
+            padding: 2px 4px;
+            display: none;
+            z-index: 2;
         }
-        ul {
-            list-style: none;
-            padding-left: 0;
+
+        .address-square:hover .remove-btn {
+            display: block;
         }
-        li {
-            padding: 0.25rem 0;
+
+        .address-square:hover {
+            background-color: #495057;
+        }
+
+        .address-square.highlight {
+            animation: pulse 0.5s ease-out;
+        }
+
+        .address-square.highlight .remove-btn {
+            display: none;
+        }
+
+        @keyframes pulse {
+            0% {
+                background-color: #0d6efd;
+                transform: scale(1);
+            }
+
+            50% {
+                background-color: #0a58ca;
+                transform: scale(1.05);
+            }
+
+            100% {
+                background-color: #343a40;
+                transform: scale(1);
+            }
+        }
+
+        body[data-bs-theme="light"] .address-square {
+            background-color: #f8f9fa;
+            border-color: #dee2e6;
+        }
+
+        body[data-bs-theme="light"] .address-square:hover {
+            background-color: #e9ecef;
+        }
+
+        @media (data-bs-theme: light) {
+            @keyframes pulse {
+                0% {
+                    background-color: #0d6efd;
+                    transform: scale(1);
+                }
+
+                50% {
+                    background-color: #0a58ca;
+                    transform: scale(1.05);
+                }
+
+                100% {
+                    background-color: #f8f9fa;
+                    transform: scale(1);
+                }
+            }
+        }
+
+        .section-header {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .section-header:hover {
+            opacity: 0.8;
+        }
+
+        .collapse-icon {
+            transition: transform 0.3s;
+        }
+
+        .collapse-icon.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .card {
+            margin-bottom: 1rem;
         }
     </style>
 </head>
+
 <body>
-    <header>
-        <h1>StreamOSC Web Interface</h1>
-    </header>
-    <main class="container">
-        <div class="panel">
-            <strong>Status:</strong> <span id="status">Disconnected</span><br>
-            <strong>Is Sending:</strong> <span id="sending">False</span>
+    <button class="btn btn-outline-secondary settings-toggle" onclick="openSettings()"
+        style="position: fixed; top: 20px; right: 20px; z-index: 1000;">
+        <span class="settings-icon">⚙️</span> Settings
+    </button>
+
+    <!-- Settings Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="settingsModalLabel">Settings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label d-flex justify-content-between align-items-center">
+                            Dark Mode
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="darkModeSwitch"
+                                    onchange="toggleTheme()" checked>
+                            </div>
+                        </label>
+                        <small class="text-muted">Toggle between dark and light theme</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label d-flex justify-content-between align-items-center">
+                            Verbose Mode
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="verboseModeSwitch"
+                                    onchange="toggleVerbose()">
+                            </div>
+                        </label>
+                        <small class="text-muted">Show detailed transport and debug messages in the console</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container mt-4">
+        <h1 class="mb-4">Mass Development Server</h1>
+
+        <!-- Status Section -->
+        <div class="card">
+            <div class="card-header section-header" onclick="toggleSection('status-section')"
+                data-section="status-section">
+                <h5 class="card-title mb-0">Status</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div class="card-body collapse show" id="status-section">
+                <div class="d-flex align-items-center">
+                    <div id="statusIndicator" class="status-indicator status-stopped"></div>
+                    <span id="statusText">Stopped</span>
+                </div>
+            </div>
         </div>
 
-        <div class="panel">
-            <h2>Receivers</h2>
-            <ul id="receivers"></ul>
+        <!-- Control Buttons Section -->
+        <div class="card">
+            <div class="card-header section-header" onclick="toggleSection('control-section')"
+                data-section="control-section">
+                <h5 class="card-title mb-0">Controls</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div class="card-body collapse show" id="control-section">
+                <button id="startBtn" class="btn btn-success me-2">Start Sending</button>
+                <button id="stopBtn" class="btn btn-danger">Stop Sending</button>
+            </div>
         </div>
 
-        <div class="panel">
-            <h2>Destinations</h2>
-            <pre id="destinations"></pre>
+        <!-- Interval Configuration -->
+        <div class="card">
+            <div class="card-header section-header" onclick="toggleSection('interval-section')"
+                data-section="interval-section">
+                <h5 class="card-title mb-0">Message Interval (seconds)</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div class="card-body collapse show" id="interval-section">
+                <div class="row align-items-center">
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <span class="input-group-text">Min</span>
+                            <input type="number" id="intervalMin" class="form-control interval-input"
+                                value="{{ interval_min }}" step="0.1" min="0.1">
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <span class="input-group-text">Max</span>
+                            <input type="number" id="intervalMax" class="form-control interval-input"
+                                value="{{ interval_max }}" step="0.1" min="0.1">
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <div class="panel">
-            <h2>Addresses</h2>
-            <pre id="addresses"></pre>
+        <!-- Relay Service Section -->
+        <div class="card mb-4">
+            <div class="card-header section-header" onclick="toggleSection('relayServiceCollapse')"
+                data-section="relayServiceCollapse">
+                <h5 class="card-title mb-0">OSC Relay Service</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div id="relayServiceCollapse" class="collapse show">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Relay Service Status</label>
+                        <div id="relayStatus" class="badge bg-secondary">Not Connected</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Connected Clients</label>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Status</th>
+                                        <th>Connected Since</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="receiversList">
+                                    <!-- Receivers will be added here dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <button class="btn btn-primary" onclick="openDownloadDialog()">
+                            <i class="bi bi-download"></i> Download Relay Clients
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
-    </main>
+
+        <!-- Download Dialog -->
+        <div class="modal fade" id="downloadModal" tabindex="-1" aria-labelledby="downloadModalLabel"
+            aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="downloadModalLabel">Download Relay Clients</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="d-grid gap-2">
+                            <a href="/download/mac" class="btn btn-outline-primary">
+                                <i class="bi bi-apple"></i> Download Mac Client
+                            </a>
+                            <a href="/download/windows" class="btn btn-outline-primary">
+                                <i class="bi bi-windows"></i> Download Windows Client
+                            </a>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Destinations Section -->
+        <div class="card">
+            <div class="card-header section-header" onclick="toggleSection('destinations-section')"
+                data-section="destinations-section">
+                <h5 class="card-title mb-0">OSC Destinations</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div class="card-body collapse show" id="destinations-section">
+                <div class="alert alert-info mb-3">
+                    <p class="mb-0"><strong>Note:</strong> This section is only relevant when the Mass Dev Server and
+                        Client software are on the same network. For remote connections, please use the OSC Relay
+                        Service above.</p>
+                </div>
+                <div id="destinationsList">
+                    <!-- Destinations will be added here dynamically -->
+                </div>
+                <button id="addDestinationBtn" class="btn btn-primary mt-3">Add Destination</button>
+            </div>
+        </div>
+
+        <!-- Available Addresses Section -->
+        <div class="card">
+            <div class="card-header section-header" onclick="toggleSection('addresses-section')"
+                data-section="addresses-section">
+                <h5 class="card-title mb-0">Available OSC Addresses</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div class="card-body collapse show" id="addresses-section">
+                <div class="address-grid" id="addressesList">
+                    <!-- Addresses will be added here dynamically -->
+                </div>
+                <div class="mt-3">
+                    <input type="text" id="newAddressInput" class="form-control mb-2" placeholder="New OSC Address">
+                    <button id="addAddressBtn" class="btn btn-primary">Add Address</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Message Log Section -->
+        <div class="card">
+            <div class="card-header section-header" onclick="toggleSection('log-section')" data-section="log-section">
+                <h5 class="card-title mb-0">Message Log</h5>
+                <span class="collapse-icon">▼</span>
+            </div>
+            <div class="card-body collapse show" id="log-section">
+                <div class="message-log" id="messageLog">
+                    <!-- Messages will be added here dynamically -->
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script>
-        const socket = io({
-            auth: {
-                api_key: '{{ api_key }}'
+        const socket = io();
+        let destinations = JSON.parse('{{ destinations|tojson|safe }}');
+        let isSending = JSON.parse('{{ is_sending|tojson|safe }}');
+        let addresses = JSON.parse('{{ addresses|tojson|safe }}');
+        let intervalMin = JSON.parse('{{ interval_min|tojson|safe }}');
+        let intervalMax = JSON.parse('{{ interval_max|tojson|safe }}');
+        let receiverId = null;
+        let verboseMode = false;
+        let darkMode = true;  // Default to dark mode
+
+        // Debug logging
+        console.log('Initial addresses:', addresses);
+        console.log('Addresses length:', addresses.length);
+        console.log('Addresses type:', typeof addresses);
+        console.log('Is addresses an array?', Array.isArray(addresses));
+
+        function openSettings() {
+            const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
+            modal.show();
+        }
+
+        function toggleTheme() {
+            const body = document.body;
+            const darkModeSwitch = document.getElementById('darkModeSwitch');
+            darkMode = darkModeSwitch.checked;
+
+            if (darkMode) {
+                body.setAttribute('data-bs-theme', 'dark');
+            } else {
+                body.setAttribute('data-bs-theme', 'light');
+            }
+        }
+
+        function toggleVerbose() {
+            const verboseModeSwitch = document.getElementById('verboseModeSwitch');
+            verboseMode = verboseModeSwitch.checked;
+            verboseLog('Verbose mode:', verboseMode ? 'enabled' : 'disabled');
+
+            // Emit toggle event to server
+            socket.emit('toggle_verbose_mode', {
+                enabled: verboseMode
+            });
+        }
+
+        function verboseLog(...args) {
+            if (verboseMode) {
+                console.log(...args);
+            }
+        }
+
+        function updateStatus() {
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            const startBtn = document.getElementById('startBtn');
+            const stopBtn = document.getElementById('stopBtn');
+
+            if (isSending) {
+                indicator.className = 'status-indicator status-running';
+                statusText.textContent = 'Running';
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+            } else {
+                indicator.className = 'status-indicator status-stopped';
+                statusText.textContent = 'Stopped';
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+        }
+
+        function createDestinationCard(destination, index) {
+            const card = document.createElement('div');
+            card.className = 'destination-card';
+            card.innerHTML = `
+                <div class="row">
+                    <div class="col-md-5">
+                        <input type="text" class="form-control" placeholder="IP Address" 
+                               value="${destination.ip}" onchange="updateDestination(${index}, 'ip', this.value)">
+                    </div>
+                    <div class="col-md-5">
+                        <input type="number" class="form-control" placeholder="Port" 
+                               value="${destination.port}" onchange="updateDestination(${index}, 'port', this.value)">
+                    </div>
+                    <div class="col-md-2">
+                        <button class="btn btn-danger" onclick="removeDestination(${index})">Remove</button>
+                    </div>
+                </div>
+            `;
+            return card;
+        }
+
+        function createAddressItem(address, index) {
+            console.log('Creating address item:', address, index);
+            const item = document.createElement('div');
+            item.className = 'address-square';
+            item.setAttribute('data-address', address);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'btn btn-danger btn-sm remove-btn';
+            removeBtn.innerHTML = '×';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation(); // Prevent triggering the square's click
+                removeAddress(index);
+            };
+
+            const addressText = document.createElement('span');
+            addressText.textContent = address;
+
+            item.appendChild(removeBtn);
+            item.appendChild(addressText);
+
+            // Add click handler to send value
+            item.onclick = () => {
+                socket.emit('send_value', {
+                    address: address,
+                    value: 1.0
+                });
+                highlightAddress(address);
+            };
+
+            return item;
+        }
+
+        function addMessageToLog(message) {
+            const log = document.getElementById('messageLog');
+            const item = document.createElement('div');
+            item.className = 'message-item';
+            const timestamp = new Date(message.timestamp * 1000).toLocaleTimeString();
+            item.textContent = `${timestamp} - ${message.address}: ${message.value}`;
+            log.appendChild(item);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function updateAddressesList() {
+            console.log('Updating addresses list');
+            const container = document.getElementById('addressesList');
+            if (!container) {
+                console.error('Addresses list container not found!');
+                return;
+            }
+            console.log('Container found:', container);
+            console.log('Current addresses:', addresses);
+            console.log('Container HTML before update:', container.innerHTML);
+            
+            // Clear the container
+            container.innerHTML = '';
+            
+            // Log each address being added
+            addresses.forEach((address, index) => {
+                console.log(`Adding address ${index}:`, address);
+                const item = createAddressItem(address, index);
+                container.appendChild(item);
+                console.log('Added item to container:', item);
+            });
+            
+            console.log('Container HTML after update:', container.innerHTML);
+            console.log('Addresses list updated');
+            
+            // Force a reflow to ensure the grid is rendered
+            container.style.display = 'none';
+            container.offsetHeight; // Trigger reflow
+            container.style.display = 'grid';
+        }
+
+        function updateDestinationsList() {
+            const container = document.getElementById('destinationsList');
+            container.innerHTML = '';
+            destinations.forEach((dest, index) => {
+                container.appendChild(createDestinationCard(dest, index));
+            });
+        }
+
+        function updateDestination(index, field, value) {
+            destinations[index][field] = value;
+        }
+
+        function removeDestination(index) {
+            destinations.splice(index, 1);
+            updateDestinationsList();
+        }
+
+        function addDestination() {
+            destinations.push({ ip: "127.0.0.1", port: 57120 });
+            updateDestinationsList();
+        }
+
+        function addAddress() {
+            const input = document.getElementById('newAddressInput');
+            const newAddress = input.value.trim();
+            if (newAddress && !addresses.includes(newAddress)) {
+                addresses.push(newAddress);
+                updateAddressesList();
+                input.value = '';
+            }
+        }
+
+        function removeAddress(index) {
+            addresses.splice(index, 1);
+            updateAddressesList();
+        }
+
+        function validateIntervals() {
+            const min = parseFloat(document.getElementById('intervalMin').value);
+            const max = parseFloat(document.getElementById('intervalMax').value);
+
+            if (min < 0.1) {
+                document.getElementById('intervalMin').value = 0.1;
+                return false;
+            }
+            if (max < min) {
+                document.getElementById('intervalMax').value = min;
+                return false;
+            }
+            return true;
+        }
+
+        // Socket.io event handlers
+        socket.on('connect', () => {
+            verboseLog('Connected to server');
+        });
+
+        socket.on('verbose_mode_updated', (data) => {
+            verboseMode = data.enabled;
+            const verboseModeSwitch = document.getElementById('verboseModeSwitch');
+            verboseModeSwitch.checked = verboseMode;
+        });
+
+        socket.on('status_update', (data) => {
+            verboseLog('Status update received:', data);
+            if (data.is_sending !== undefined) {
+                isSending = data.is_sending;
+                updateStatus();
+            }
+            if (data.destinations) {
+                destinations = data.destinations;
+                updateDestinationsList();
+            }
+            if (data.addresses) {
+                addresses = data.addresses;
+                updateAddressesList();
+            }
+            if (data.interval_min !== undefined) {
+                intervalMin = data.interval_min;
+                document.getElementById('intervalMin').value = intervalMin;
+            }
+            if (data.interval_max !== undefined) {
+                intervalMax = data.interval_max;
+                document.getElementById('intervalMax').value = intervalMax;
+            }
+            if (data.receivers) {
+                updateReceiversList(data.receivers);
             }
         });
 
-        socket.on("connect", () => {
-            console.log("Connected to server");
+        socket.on('receiver_list_update', (data) => {
+            verboseLog('Receiver list update received:', data);
+            if (data.receivers) {
+                updateReceiversList(data.receivers);
+            }
         });
 
-        socket.on("disconnect", () => {
-            document.getElementById("status").textContent = "Disconnected";
-            document.getElementById("sending").textContent = "False";
-            document.getElementById("receivers").innerHTML = "";
-            document.getElementById("destinations").textContent = "";
-            document.getElementById("addresses").textContent = "";
+        socket.on('registration_confirmed', (data) => {
+            receiverId = data.receiver_id;
+            showRegistrationStatus('Successfully registered as receiver', 'success');
+            document.getElementById('relayMessages').classList.remove('d-none');
+            verboseLog('Registered as receiver with ID:', receiverId);
         });
 
-        socket.on("status_update", (data) => {
-            document.getElementById("status").textContent = data.status;
-            document.getElementById("sending").textContent = data.is_sending;
-            document.getElementById("destinations").textContent = JSON.stringify(data.destinations || [], null, 2);
-            document.getElementById("addresses").textContent = JSON.stringify(data.addresses || [], null, 2);
-            updateReceivers(data.receivers || []);
+        socket.on('osc_message', (message) => {
+            addMessageToLog(message);
+            highlightAddress(message.address);
         });
 
-        socket.on("receiver_list_update", (data) => {
-            updateReceivers(data.receivers || []);
+        // Event Listeners
+        document.getElementById('addDestinationBtn').addEventListener('click', addDestination);
+        document.getElementById('addAddressBtn').addEventListener('click', addAddress);
+        document.getElementById('startBtn').addEventListener('click', startSending);
+        document.getElementById('stopBtn').addEventListener('click', stopSending);
+        document.getElementById('newAddressInput').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                addAddress();
+            }
         });
 
-        function updateReceivers(receivers) {
-            const list = document.getElementById("receivers");
-            list.innerHTML = "";
-            receivers.forEach(r => {
-                const li = document.createElement("li");
-                li.textContent = `${r.name} (connected at ${r.connected_at})`;
-                list.appendChild(li);
+        // Interval input validation
+        document.getElementById('intervalMin').addEventListener('change', validateIntervals);
+        document.getElementById('intervalMax').addEventListener('change', validateIntervals);
+
+        // Initial setup
+        console.log('Running initial setup');
+        updateDestinationsList();
+        updateAddressesList();
+        updateStatus();
+        console.log('Initial setup complete');
+
+        // Initialize the page
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM Content Loaded');
+            console.log('Initial addresses:', addresses);
+            
+            // Ensure addresses is an array
+            if (!Array.isArray(addresses)) {
+                console.error('Addresses is not an array:', addresses);
+                addresses = [];
+            }
+            
+            updateStatus();
+            updateDestinationsList();
+            updateAddressesList();
+            
+            // Ensure the grid container is visible
+            const gridContainer = document.getElementById('addressesList');
+            if (gridContainer) {
+                gridContainer.style.display = 'grid';
+                gridContainer.style.visibility = 'visible';
+                console.log('Grid container initialized');
+            }
+            
+            // Add event listeners
+            document.getElementById('startBtn').addEventListener('click', startSending);
+            document.getElementById('stopBtn').addEventListener('click', stopSending);
+            document.getElementById('addAddressBtn').addEventListener('click', addAddress);
+        });
+
+        // Relay service functions
+        function registerAsReceiver() {
+            const nameInput = document.getElementById('receiverName');
+            const name = nameInput.value.trim();
+
+            if (!name) {
+                showRegistrationStatus('Please enter a name for your receiver', 'danger');
+                return;
+            }
+
+            socket.emit('register_receiver', { name: name });
+        }
+
+        function unregisterReceiver() {
+            if (receiverId) {
+                socket.emit('unregister_receiver', { receiver_id: receiverId });
+                receiverId = null;
+                document.getElementById('relayMessages').classList.add('d-none');
+                showRegistrationStatus('Receiver unregistered', 'info');
+            }
+        }
+
+        function showRegistrationStatus(message, type) {
+            const statusDiv = document.getElementById('registrationStatus');
+            statusDiv.textContent = message;
+            statusDiv.className = `alert alert-${type}`;
+            statusDiv.classList.remove('d-none');
+
+            // Hide after 5 seconds
+            setTimeout(() => {
+                statusDiv.classList.add('d-none');
+            }, 5000);
+        }
+
+        function updateReceiversList(receivers) {
+            const tbody = document.getElementById('receiversList');
+            const relayStatus = document.getElementById('relayStatus');
+            tbody.innerHTML = '';
+
+            // Update relay status based on active receivers
+            const hasActiveReceivers = receivers.length > 0;
+            if (hasActiveReceivers) {
+                relayStatus.textContent = 'Connected';
+                relayStatus.className = 'badge bg-success';
+                // Enable the start button if there are active receivers
+                document.getElementById('startBtn').disabled = false;
+            } else {
+                relayStatus.textContent = 'Not Connected';
+                relayStatus.className = 'badge bg-secondary';
+                // Disable the start button if there are no active receivers
+                document.getElementById('startBtn').disabled = true;
+            }
+
+            if (receivers.length === 0) {
+                const row = document.createElement('tr');
+                row.innerHTML = '<td colspan="4" class="text-center">No receivers registered</td>';
+                tbody.appendChild(row);
+                return;
+            }
+
+            receivers.forEach(receiver => {
+                const row = document.createElement('tr');
+                const connectedDate = new Date(receiver.connected_at).toLocaleString();
+                row.className = 'table-success';
+                row.innerHTML = `
+                    <td>${receiver.name}</td>
+                    <td><span class="text-success">Active</span></td>
+                    <td>${connectedDate}</td>
+                    <td>
+                        <button class="btn btn-sm btn-danger" onclick="disconnectReceiver('${receiver.id}', '${receiver.name}')">
+                            Disconnect
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            // Show the relay messages section if there are active receivers
+            document.getElementById('relayMessages').classList.toggle('d-none', !hasActiveReceivers);
+        }
+
+        function disconnectReceiver(receiverId, receiverName) {
+            if (confirm(`Are you sure you want to disconnect ${receiverName}?`)) {
+                socket.emit('disconnect_receiver', { receiver_id: receiverId }, (response) => {
+                    if (response && response.success) {
+                        verboseLog(`Successfully disconnected ${receiverName}`);
+                    } else {
+                        console.error(`Failed to disconnect ${receiverName}:`, response ? response.message : 'Unknown error');
+                        alert(`Failed to disconnect ${receiverName}. Please try again.`);
+                    }
+                });
+            }
+        }
+
+        function addRelayMessageToLog(message) {
+            const log = document.getElementById('relayMessageLog');
+            const item = document.createElement('div');
+            item.className = 'message-item';
+            const timestamp = new Date(message.timestamp * 1000).toLocaleTimeString();
+            item.textContent = `${timestamp} - ${message.address}: ${message.value}`;
+            log.appendChild(item);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        // Event Listeners for relay service
+        document.getElementById('registerReceiverBtn').addEventListener('click', registerAsReceiver);
+        document.getElementById('receiverName').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                registerAsReceiver();
+            }
+        });
+
+        // Request initial receiver list
+        socket.emit('request_receiver_list');
+
+        function highlightAddress(address) {
+            const addressElement = document.querySelector(`.address-square[data-address="${address}"]`);
+            if (addressElement) {
+                addressElement.classList.remove('highlight');
+                void addressElement.offsetWidth; // Force reflow
+                addressElement.classList.add('highlight');
+            }
+        }
+
+        // Add this before other scripts
+        function toggleSection(sectionId) {
+            const section = document.getElementById(sectionId);
+            const header = section.parentElement.querySelector('.section-header');
+            const icon = header.querySelector('.collapse-icon');
+
+            // Get the Bootstrap collapse instance
+            const bsCollapse = bootstrap.Collapse.getOrCreateInstance(section);
+
+            // Toggle the collapse
+            bsCollapse.toggle();
+
+            // Update the icon based on the current state
+            section.addEventListener('shown.bs.collapse', function () {
+                icon.classList.remove('collapsed');
+                localStorage.setItem(sectionId + '-collapsed', 'false');
+            });
+
+            section.addEventListener('hidden.bs.collapse', function () {
+                icon.classList.add('collapsed');
+                localStorage.setItem(sectionId + '-collapsed', 'true');
+            });
+        }
+
+        // Function to restore section states
+        function restoreSectionStates() {
+            const sections = document.querySelectorAll('.card-body.collapse');
+            sections.forEach(section => {
+                const isCollapsed = localStorage.getItem(section.id + '-collapsed') === 'true';
+                const icon = section.parentElement.querySelector('.collapse-icon');
+
+                if (isCollapsed) {
+                    const bsCollapse = bootstrap.Collapse.getOrCreateInstance(section);
+                    bsCollapse.hide();
+                    icon.classList.add('collapsed');
+                }
+            });
+        }
+
+        // Call this after the page loads and other scripts are ready
+        window.addEventListener('load', restoreSectionStates);
+
+        function openDownloadDialog() {
+            const modal = new bootstrap.Modal(document.getElementById('downloadModal'));
+            modal.show();
+        }
+
+        function startSending() {
+            if (!receiverId) {
+                alert('No active receivers available');
+                return;
+            }
+
+            const data = {
+                api_key: '{{ api_key }}',
+                receiver_id: receiverId,
+                destinations: destinations,
+                addresses: addresses,
+                interval_min: parseFloat(document.getElementById('intervalMin').value),
+                interval_max: parseFloat(document.getElementById('intervalMax').value)
+            };
+
+            socket.emit('start_sending', data, (response) => {
+                if (response && response.error) {
+                    alert(`Failed to start sending: ${response.error}`);
+                }
+            });
+        }
+
+        function stopSending() {
+            if (!receiverId) {
+                alert('No active receivers available');
+                return;
+            }
+
+            const data = {
+                api_key: '{{ api_key }}',
+                receiver_id: receiverId
+            };
+
+            socket.emit('stop_sending', data, (response) => {
+                if (response && response.error) {
+                    alert(`Failed to stop sending: ${response.error}`);
+                }
             });
         }
     </script>
 </body>
+
 </html>
