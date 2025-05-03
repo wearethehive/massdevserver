@@ -927,10 +927,11 @@ if __name__ == '__main__':
         if 'X-Forwarded-Proto' in request.headers:
             request.environ['wsgi.url_scheme'] = request.headers['X-Forwarded-Proto']
     
-    # Start the server without SSL (SSL will be handled by Nginx Proxy Manager)
-    socketio.run(app, 
-                host=host, 
-                port=port, 
-                debug=debug, 
-                use_reloader=True,
-                allow_unsafe_werkzeug=True)  # Allow unsafe werkzeug for development
+    # Only run the Flask development server if not using Gunicorn
+    if not os.environ.get('GUNICORN_CMD_ARGS'):
+        socketio.run(app, 
+                    host=host, 
+                    port=port, 
+                    debug=debug, 
+                    use_reloader=True,
+                    allow_unsafe_werkzeug=True)

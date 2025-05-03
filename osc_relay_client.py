@@ -147,18 +147,19 @@ class OSCRelayClient(QObject):
         try:
             with open(config_path, 'r') as f:
                 self.config = json.load(f)
-                # Ensure server_url uses port 7401
+                # Ensure server_url is correct for NPM
                 if 'server_url' in self.config:
                     url = self.config['server_url']
-                    if ':80' in url:
-                        self.config['server_url'] = url.replace(':80', ':7401')
+                    # Remove any port from the URL as NPM handles this
+                    if ':80' in url or ':7401' in url:
+                        self.config['server_url'] = url.split(':')[0] + '://' + url.split('://')[1].split(':')[0]
                 logger.info(f"Loaded config from file: {self.config}")
                 return self.config
         except Exception as e:
             logger.error(f"Error loading config: {e}")
-            # Return default config with correct port
+            # Return default config
             return {
-                'server_url': 'http://massdev.one:7401',
+                'server_url': 'https://massdev.one',  # No port needed
                 'api_key': '',
                 'receiver_name': 'default',
                 'local_ip': '127.0.0.1',
