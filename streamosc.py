@@ -20,7 +20,6 @@ import sys
 from datetime import datetime, timedelta
 from flask_caching import Cache
 import io
-from aiohttp import web
 
 # Configure logging - reduce logging overhead in production
 log_level = os.environ.get('LOG_LEVEL', 'INFO')  # Changed default to INFO
@@ -79,7 +78,8 @@ app.config.from_mapping(cache_config)
 cache = Cache(app)
 
 # Configure CORS to only allow specific origins
-allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')
+allowed_origins = [origin.strip() for origin in os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')]
+logger.info(f"Allowed origins: {allowed_origins}")
 socketio = SocketIO(app, 
                    cors_allowed_origins=allowed_origins,
                    async_mode='eventlet',
