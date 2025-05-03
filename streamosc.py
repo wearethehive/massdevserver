@@ -62,26 +62,6 @@ logger.addHandler(file_handler)
 # Global variables
 verbose_mode = False
 background_tasks = []
-
-# Default list of OSC addresses
-OSC_ADDRESSES = [
-    "/mass/tile1",
-    "/mass/tile2",
-    "/mass/tile3",
-    "/mass/tile4",
-    "/mass/tile5",
-    "/mass/tile6",
-    "/mass/tile7",
-    "/mass/tile8",
-    "/mass/tile9",
-    "/mass/tile10",
-    "/mass/tile11",
-    "/mass/tile12",
-    "/mass/tile13",
-    "/mass/tile14",
-]
-
-# Global variables
 is_sending = False
 send_thread = None
 destinations = [{"ip": "127.0.0.1", "port": 57120}]  # Default destination
@@ -104,6 +84,24 @@ logger.info(f"Server API keys: {API_KEYS}")
 
 # Cache the OSC clients to avoid recreating them
 osc_clients_cache = {}
+
+# Default list of OSC addresses
+OSC_ADDRESSES = [
+    "/mass/tile1",
+    "/mass/tile2",
+    "/mass/tile3",
+    "/mass/tile4",
+    "/mass/tile5",
+    "/mass/tile6",
+    "/mass/tile7",
+    "/mass/tile8",
+    "/mass/tile9",
+    "/mass/tile10",
+    "/mass/tile11",
+    "/mass/tile12",
+    "/mass/tile13",
+    "/mass/tile14",
+]
 
 def get_osc_clients():
     """Get or create OSC clients for the current destinations"""
@@ -140,7 +138,8 @@ async def handle_websocket(websocket, path):
     connected_clients.add(client_id)
     connection_tracker[client_id] = {
         'last_seen': datetime.now(),
-        'auth': None
+        'auth': None,
+        'websocket': websocket  # Store the websocket in the tracker
     }
     
     try:
@@ -206,7 +205,6 @@ async def handle_websocket(websocket, path):
                             
                 elif message_type == 'start_sending':
                     # Handle start sending command
-                    global is_sending, send_thread
                     if not is_sending:
                         is_sending = True
                         send_thread = threading.Thread(target=send_random_osc_messages)
@@ -216,7 +214,6 @@ async def handle_websocket(websocket, path):
                         
                 elif message_type == 'stop_sending':
                     # Handle stop sending command
-                    global is_sending
                     is_sending = False
                     await broadcast_status_update()
                     
