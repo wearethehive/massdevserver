@@ -54,10 +54,10 @@ def index():
         return render_template(
             'index.html',
             api_key=API_KEYS[0],
-            destinations=destinations,
-            addresses=current_addresses,
-            is_sending=is_sending,
-            receivers=get_receivers_list()
+            destinations=destinations or [],
+            addresses=current_addresses or [],
+            is_sending=is_sending or False,
+            receivers=get_receivers_list() or []
         )
     except Exception as e:
         logger.exception("Failed to render index.html")
