@@ -907,5 +907,22 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7401))
     debug = os.environ.get('DEBUG', 'False').lower() == 'true'
     
+    # Configure Socket.IO with proper settings for NPM
+    socketio.init_app(app, 
+                     cors_allowed_origins=['*'],
+                     async_mode='eventlet',
+                     ping_timeout=60,
+                     ping_interval=25,
+                     max_http_buffer_size=1e8,
+                     allow_upgrades=True,
+                     transports=['websocket', 'polling'],
+                     engineio_logger=True,
+                     manage_session=False)
+    
     # Start the server without SSL (SSL will be handled by Nginx Proxy Manager)
-    socketio.run(app, host=host, port=port, debug=debug, use_reloader=True)
+    socketio.run(app, 
+                host=host, 
+                port=port, 
+                debug=debug, 
+                use_reloader=True,
+                allow_unsafe_werkzeug=True)  # Allow unsafe werkzeug for development
