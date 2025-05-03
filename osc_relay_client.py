@@ -175,13 +175,14 @@ class OSCRelayClient(QObject):
         requests.packages.urllib3.disable_warnings()
         
         self.sio = socketio.Client(
+            ssl_verify=False,  # Temporarily disable SSL verification
             reconnection=True,
             reconnection_attempts=5,
             reconnection_delay=1000,
             reconnection_delay_max=5000,
+            randomization_factor=0.5,
             logger=True,
-            engineio_logger=True,
-            ssl_verify=False  # Disable SSL verification temporarily
+            engineio_logger=True
         )
         self.osc_sender = None
         self.osc_receiver = None
@@ -263,36 +264,24 @@ class OSCRelayClient(QObject):
                     logger.info("Already connected to server")
                     return
                 
-                # Connect with API key in query parameters
-                logger.info(f"Connecting to server {self.server_url} with API key: {self.api_key}")
-                
-                # Only include API key in auth if it's not empty
-                auth_data = {}
-                if self.api_key and self.api_key.strip():
-                    auth_data = {'api_key': self.api_key}
-                
-                logger.info(f"Auth data: {auth_data}")
-                
+                # Test connection first
                 try:
-                    # Test connection first
-                    test_url = f"{self.server_url}/socket.io/"
-                    logger.info(f"Testing connection to {test_url}")
-                    response = requests.get(test_url, verify=False, timeout=10)
+                    logger.info(f"Testing connection to {self.server_url}/socket.io/")
+                    response = requests.get(f"{self.server_url}/socket.io/", verify=False)
                     logger.info(f"Test connection response: {response.status_code}")
                     if response.status_code != 200:
                         logger.error(f"Test connection failed with status {response.status_code}")
                         logger.error(f"Response content: {response.text}")
                         raise Exception(f"Test connection failed with status {response.status_code}")
+                    logger.info("Test connection successful")
                     
-                    # Now connect Socket.IO
-                    self.sio.connect(
-                        self.server_url,
-                        auth=auth_data,
-                        wait_timeout=30
-                    )
-                    logger.info(f"Connected to server: {self.server_url}")
-                    self.safe_emit_status(f"Connected to {self.server_url}")
-                    self.reconnect_attempts = 0
+                    # Connect to Socket.IO server
+                    logger.info(f"Connecting to Socket.IO server at {self.server_url}")
+                    self.sio.connect(self.server_url, 
+                                    auth={'api_key': self.api_key},
+                                    namespaces=['/'],
+                                    wait_timeout=10)
+                    logger.info("Socket.IO connection established")
                 except Exception as e:
                     logger.error(f"Failed to connect: {str(e)}")
                     self.safe_emit_status(f"Failed to connect: {str(e)}")

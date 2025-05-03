@@ -79,6 +79,9 @@ cache = Cache(app)
 
 # Configure CORS to only allow specific origins
 allowed_origins = [origin.strip() for origin in os.environ.get('ALLOWED_ORIGINS', 'http://localhost:7401').split(',')]
+# Add the client's IP to allowed origins
+client_ip = os.environ.get('CLIENT_IP', '172.16.17.31')
+allowed_origins.append(f'http://{client_ip}:7401')
 logger.info(f"Allowed origins: {allowed_origins}")
 socketio = SocketIO(app, 
                    cors_allowed_origins=allowed_origins,
