@@ -919,6 +919,14 @@ if __name__ == '__main__':
                      engineio_logger=True,
                      manage_session=False)
     
+    # Add middleware to handle proxy headers
+    @app.before_request
+    def fix_proxy():
+        if 'X-Forwarded-For' in request.headers:
+            request.environ['REMOTE_ADDR'] = request.headers['X-Forwarded-For'].split(',')[0]
+        if 'X-Forwarded-Proto' in request.headers:
+            request.environ['wsgi.url_scheme'] = request.headers['X-Forwarded-Proto']
+    
     # Start the server without SSL (SSL will be handled by Nginx Proxy Manager)
     socketio.run(app, 
                 host=host, 

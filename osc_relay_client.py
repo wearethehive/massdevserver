@@ -56,6 +56,11 @@ def load_config():
                 for key, value in DEFAULT_CONFIG.items():
                     if key not in config:
                         config[key] = value
+                # Ensure server_url uses port 7401
+                if 'server_url' in config:
+                    url = config['server_url']
+                    if ':80' in url:
+                        config['server_url'] = url.replace(':80', ':7401')
                 logger.info(f"Loaded config from file: {config}")
                 return config
         except Exception as e:
@@ -141,17 +146,24 @@ class OSCRelayClient(QObject):
         """Load configuration from file"""
         try:
             with open(config_path, 'r') as f:
-                config = json.load(f)
-                logger.info(f"Loaded config from file: {config}")
-                return config
+                self.config = json.load(f)
+                # Ensure server_url uses port 7401
+                if 'server_url' in self.config:
+                    url = self.config['server_url']
+                    if ':80' in url:
+                        self.config['server_url'] = url.replace(':80', ':7401')
+                logger.info(f"Loaded config from file: {self.config}")
+                return self.config
         except Exception as e:
             logger.error(f"Error loading config: {e}")
+            # Return default config with correct port
             return {
-                'server_url': DEFAULT_SERVER_URL,
-                'api_key': DEFAULT_API_KEY,
-                'receiver_name': socket.gethostname(),
+                'server_url': 'http://massdev.one:7401',
+                'api_key': '',
+                'receiver_name': 'default',
                 'local_ip': '127.0.0.1',
-                'local_port': DEFAULT_LOCAL_PORT
+                'local_port': 57120,
+                'client_name': 'default'
             }
 
     def __init__(self, config_path='config.json'):
@@ -164,13 +176,7 @@ class OSCRelayClient(QObject):
             reconnection_delay=1000,
             reconnection_delay_max=5000,
             logger=True,
-            engineio_logger=True,
-            handle_sigint=True,
-            transports=['websocket', 'polling'],  # Specify allowed transports
-            upgrade=True,  # Allow WebSocket upgrades
-            ping_timeout=60,  # Increased timeout for proxied connections
-            ping_interval=25,  # Increased interval for proxied connections
-            max_http_buffer_size=1e8  # Increased buffer size for large messages
+            engineio_logger=True
         )
         self.osc_sender = None
         self.osc_receiver = None
