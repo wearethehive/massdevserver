@@ -46,7 +46,6 @@ def get_receivers_list():
     } for rid, info in registered_receivers.items()]
 
 @app.route('/')
-@app.route('/')
 def index():
     try:
         logger.info("Serving index.html")
@@ -60,16 +59,6 @@ def index():
             is_sending=is_sending,
             receivers=get_receivers_list()
         )
-    except Exception as e:
-        logger.exception("Failed to render index.html")
-        return "Internal Server Error", 500
-
-
-    try:
-        logger.info("Serving index.html")
-        path = os.path.abspath(os.path.join(app.template_folder, 'index.html'))
-        logger.info(f"Resolved index.html path: {path}")
-        return render_template('index.html', api_key=API_KEYS[0])
     except Exception as e:
         logger.exception("Failed to render index.html")
         return "Internal Server Error", 500
@@ -92,7 +81,7 @@ def handle_connect(auth):
         'addresses': current_addresses,
         'receivers': get_receivers_list()
     }, room=client_id)
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -103,7 +92,7 @@ def handle_disconnect():
     to_remove = [rid for rid, r in registered_receivers.items() if r['socket_id'] == client_id]
     for rid in to_remove:
         registered_receivers.pop(rid)
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
 
 @socketio.on('register_receiver')
 @limiter.limit("10 per minute")
@@ -128,7 +117,7 @@ def handle_register_receiver(data):
     }
     join_room(receiver_id)
     emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
 
 @socketio.on('unregister_receiver')
 @limiter.limit("10 per minute")
@@ -144,7 +133,7 @@ def handle_unregister_receiver(data):
     registered_receivers.pop(receiver_id)
     leave_room(receiver_id)
     emit('unregistration_confirmed', {'message': 'Unregistered'})
-    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, to='/', namespace='/')
 
 @socketio.on('update_config')
 def handle_update_config(data):
