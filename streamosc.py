@@ -6,9 +6,10 @@ from flask_caching import Cache
 from dotenv import load_dotenv
 import os, uuid, time, logging
 from datetime import datetime
+from collections import deque
 
 # Init Flask app
-app = Flask(__name__)
+app = Flask(__name__, static_url_path='', static_folder='static', template_folder='templates')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'secret!')
 
 # Init cache and limiter
@@ -30,8 +31,11 @@ destinations = []
 current_addresses = []
 is_sending = False
 send_thread = None
-message_queue = {}
-MAX_QUEUE_SIZE = 100
+message_queue = deque(maxlen=100)
+
+# Logger setup
+logger = logging.getLogger()
+logging.basicConfig(level=logging.INFO)
 
 # Helpers
 def get_receivers_list():
@@ -63,6 +67,7 @@ def handle_connect(auth):
         'addresses': current_addresses,
         'receivers': get_receivers_list()
     }, room=client_id)
+    socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -96,6 +101,7 @@ def handle_register_receiver(data):
         'active': True,
         'socket_id': client_id
     }
+    join_room(receiver_id)
     emit('registration_confirmed', {'receiver_id': receiver_id}, room=client_id)
     socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
 
@@ -115,7 +121,39 @@ def handle_unregister_receiver(data):
     emit('unregistration_confirmed', {'message': 'Unregistered'})
     socketio.emit('receiver_list_update', {'receivers': get_receivers_list()}, broadcast=True)
 
+@socketio.on('update_config')
+def handle_update_config(data):
+    global destinations, current_addresses
+    destinations = data.get('destinations', [])
+    current_addresses = data.get('addresses', [])
+    emit('config_updated', {'message': 'Configuration updated'})
+
+@socketio.on('queue_message')
+def handle_queue_message(data):
+    message_queue.append(data)
+
+@socketio.on('start_sending')
+def handle_start_sending():
+    global is_sending, send_thread
+    is_sending = True
+    if not send_thread:
+        send_thread = socketio.start_background_task(target=relay_messages)
+    emit('sending_status', {'status': 'started'})
+
+@socketio.on('stop_sending')
+def handle_stop_sending():
+    global is_sending
+    is_sending = False
+    emit('sending_status', {'status': 'stopped'})
+
+def relay_messages():
+    global is_sending
+    while is_sending:
+        if message_queue:
+            message = message_queue.popleft()
+            for receiver_id in registered_receivers:
+                socketio.emit('osc_message', message, room=receiver_id)
+        socketio.sleep(0.01)
+
 if __name__ == '__main__':
-    logger = logging.getLogger()
-    logging.basicConfig(level=logging.INFO)
     socketio.run(app, host='0.0.0.0', port=7401)
