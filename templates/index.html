@@ -3,34 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StreamOSC Dashboard</title>
+    <title>StreamOSC</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.83/dist/themes/light.css">
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0-beta.83/dist/shoelace.js"></script>
     <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <style>
-        body { font-family: sans-serif; margin: 20px; }
-        .status { margin-bottom: 20px; }
-        .section { margin-bottom: 30px; }
-        pre { background: #f4f4f4; padding: 10px; overflow-x: auto; }
+        body {
+            font-family: sans-serif;
+            padding: 2rem;
+            background: #fafafa;
+        }
+        h1 {
+            margin-bottom: 1rem;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            padding: 1rem;
+            margin-bottom: 2rem;
+        }
+        pre {
+            background: #eee;
+            padding: 1rem;
+            overflow-x: auto;
+        }
     </style>
 </head>
 <body>
-    <h1>StreamOSC Dashboard</h1>
+    <h1>StreamOSC Web Interface</h1>
 
-    <div class="status">
+    <div class="card">
         <strong>Status:</strong> <span id="status">Disconnected</span><br>
         <strong>Is Sending:</strong> <span id="sending">False</span>
     </div>
 
-    <div class="section">
+    <div class="card">
         <h2>Receivers</h2>
         <ul id="receivers"></ul>
     </div>
 
-    <div class="section">
+    <div class="card">
         <h2>Destinations</h2>
         <pre id="destinations"></pre>
     </div>
 
-    <div class="section">
+    <div class="card">
         <h2>Addresses</h2>
         <pre id="addresses"></pre>
     </div>
