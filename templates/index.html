@@ -426,19 +426,14 @@
             <div id="relayServiceCollapse" class="collapse show">
                 <div class="card-body">
                     <div class="mb-3">
-                        <label class="form-label">Relay Service Status</label>
-                        <div id="relayStatus" class="badge bg-secondary">Not Connected</div>
-                    </div>
-                    <div class="mb-3">
                         <label class="form-label">Connected Clients</label>
                         <div class="table-responsive">
                             <table class="table table-sm">
                                 <thead>
                                     <tr>
                                         <th>Name</th>
-                                        <th>Status</th>
+                                        <th>ID</th>
                                         <th>Connected Since</th>
-                                        <th>Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="receiversList">
@@ -753,6 +748,8 @@
         // Socket.io event handlers
         socket.on('connect', () => {
             verboseLog('Connected to server');
+            // Request initial receiver list
+            socket.emit('request_receiver_list');
         });
 
         socket.on('verbose_mode_updated', (data) => {
@@ -786,6 +783,15 @@
             if (data.receivers) {
                 updateReceiversList(data.receivers);
             }
+            if (data.has_active_receivers !== undefined) {
+                const startBtn = document.getElementById('startBtn');
+                startBtn.disabled = !data.has_active_receivers;
+                if (!data.has_active_receivers) {
+                    startBtn.title = 'No active receivers available';
+                } else {
+                    startBtn.title = '';
+                }
+            }
         });
 
         socket.on('receiver_list_update', (data) => {
@@ -797,9 +803,9 @@
 
         socket.on('registration_confirmed', (data) => {
             receiverId = data.receiver_id;
-            showRegistrationStatus('Successfully registered as receiver', 'success');
-            document.getElementById('relayMessages').classList.remove('d-none');
-            verboseLog('Registered as receiver with ID:', receiverId);
+            verboseLog('Registration confirmed:', data);
+            // Request updated receiver list
+            socket.emit('request_receiver_list');
         });
 
         socket.on('osc_message', (message) => {
@@ -893,50 +899,37 @@
         }
 
         function updateReceiversList(receivers) {
-            const tbody = document.getElementById('receiversList');
-            const relayStatus = document.getElementById('relayStatus');
-            tbody.innerHTML = '';
-
-            // Update relay status based on active receivers
-            const hasActiveReceivers = receivers.length > 0;
-            if (hasActiveReceivers) {
-                relayStatus.textContent = 'Connected';
-                relayStatus.className = 'badge bg-success';
-                // Enable the start button if there are active receivers
-                document.getElementById('startBtn').disabled = false;
-            } else {
-                relayStatus.textContent = 'Not Connected';
-                relayStatus.className = 'badge bg-secondary';
-                // Disable the start button if there are no active receivers
-                document.getElementById('startBtn').disabled = true;
-            }
-
-            if (receivers.length === 0) {
-                const row = document.createElement('tr');
-                row.innerHTML = '<td colspan="4" class="text-center">No receivers registered</td>';
-                tbody.appendChild(row);
+            const container = document.getElementById('receiversList');
+            if (!container) return;
+            
+            container.innerHTML = '';
+            if (!receivers || receivers.length === 0) {
+                container.innerHTML = '<tr><td colspan="3">No receivers connected</td></tr>';
+                // Disable start button if no receivers
+                const startBtn = document.getElementById('startBtn');
+                if (startBtn) {
+                    startBtn.disabled = true;
+                    startBtn.title = 'No active receivers available';
+                }
                 return;
             }
-
+            
             receivers.forEach(receiver => {
                 const row = document.createElement('tr');
-                const connectedDate = new Date(receiver.connected_at).toLocaleString();
-                row.className = 'table-success';
                 row.innerHTML = `
-                    <td>${receiver.name}</td>
-                    <td><span class="text-success">Active</span></td>
-                    <td>${connectedDate}</td>
-                    <td>
-                        <button class="btn btn-sm btn-danger" onclick="disconnectReceiver('${receiver.id}', '${receiver.name}')">
-                            Disconnect
-                        </button>
-                    </td>
+                    <td>${receiver.name || 'Unknown'}</td>
+                    <td>${receiver.id || 'N/A'}</td>
+                    <td>${receiver.connected_at || 'N/A'}</td>
                 `;
-                tbody.appendChild(row);
+                container.appendChild(row);
             });
-
-            // Show the relay messages section if there are active receivers
-            document.getElementById('relayMessages').classList.toggle('d-none', !hasActiveReceivers);
+            
+            // Enable start button if there are receivers
+            const startBtn = document.getElementById('startBtn');
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.title = '';
+            }
         }
 
         function disconnectReceiver(receiverId, receiverName) {
@@ -969,9 +962,6 @@
                 registerAsReceiver();
             }
         });
-
-        // Request initial receiver list
-        socket.emit('request_receiver_list');
 
         function highlightAddress(address) {
             const addressElement = document.querySelector(`.address-square[data-address="${address}"]`);
@@ -1030,41 +1020,17 @@
         }
 
         function startSending() {
-            if (!receiverId) {
-                alert('No active receivers available');
-                return;
-            }
-
-            const data = {
-                api_key: '{{ api_key }}',
-                receiver_id: receiverId,
-                destinations: destinations,
-                addresses: addresses,
-                interval_min: parseFloat(document.getElementById('intervalMin').value),
-                interval_max: parseFloat(document.getElementById('intervalMax').value)
-            };
-
-            socket.emit('start_sending', data, (response) => {
-                if (response && response.error) {
-                    alert(`Failed to start sending: ${response.error}`);
+            socket.emit('start_sending', {}, (response) => {
+                if (response && response.type === 'error') {
+                    alert(response.message);
                 }
             });
         }
 
         function stopSending() {
-            if (!receiverId) {
-                alert('No active receivers available');
-                return;
-            }
-
-            const data = {
-                api_key: '{{ api_key }}',
-                receiver_id: receiverId
-            };
-
-            socket.emit('stop_sending', data, (response) => {
-                if (response && response.error) {
-                    alert(`Failed to stop sending: ${response.error}`);
+            socket.emit('stop_sending', {}, (response) => {
+                if (response && response.type === 'error') {
+                    alert(response.message);
                 }
             });
         }

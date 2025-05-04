@@ -22,20 +22,36 @@ import socket
 from dotenv import load_dotenv
 import urllib.parse
 import asyncio
-import websockets
+import websocket
 from pythonosc import udp_client
 from pythonosc import osc_message_builder
 from pythonosc import osc_bundle_builder
 import uuid
+from pythonosc import osc_server
+from pythonosc import dispatcher
+from pathlib import Path
+import traceback
+from PySide6.QtCore import Qt, Signal, QObject, QSettings, QPoint, QSize
+
+# Disable websocket debug logging BEFORE any websocket operations
+websocket.enableTrace(False)
+logging.getLogger('websocket').setLevel(logging.WARNING)
+logging.getLogger('websocket-client').setLevel(logging.WARNING)
+logging.getLogger('websocket._app').setLevel(logging.WARNING)
+logging.getLogger('websocket._core').setLevel(logging.WARNING)
+logging.getLogger('websocket._handshake').setLevel(logging.WARNING)
+logging.getLogger('websocket._http').setLevel(logging.WARNING)
+logging.getLogger('websocket._socket').setLevel(logging.WARNING)
+logging.getLogger('websocket._url').setLevel(logging.WARNING)
+logging.getLogger('websocket._utils').setLevel(logging.WARNING)
 
 # Load environment variables
 load_dotenv()
 
 # Default configuration
-DEFAULT_SERVER_PORT = 7401
-DEFAULT_SERVER_URL = 'https://massdev.one'  # Changed from localhost
+DEFAULT_SERVER_PORT = 8080
+DEFAULT_SERVER_URL = 'ws://localhost:8080'
 DEFAULT_LOCAL_PORT = 57120
-DEFAULT_API_KEY = os.environ.get('API_KEYS', 'default-key-for-development').split(',')[0]  # Take first key from comma-separated list
 
 # Configuration file path
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
@@ -46,8 +62,7 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 
 # Default configuration
 DEFAULT_CONFIG = {
-    'server_url': DEFAULT_SERVER_URL,  # This will now use https://massdev.one
-    'api_key': DEFAULT_API_KEY,
+    'server_url': DEFAULT_SERVER_URL,
     'client_name': socket.gethostname(),
     'local_ip': '127.0.0.1',
     'local_port': DEFAULT_LOCAL_PORT
@@ -63,9 +78,10 @@ def load_config():
                 if 'server_url' in config:
                     url = config['server_url']
                     if 'YOUR_SERVER_IP' in url:
-                        config['server_url'] = 'https://massdev.one'  # Use the correct domain
-                    elif not url.startswith(('http://', 'https://')):
-                        config['server_url'] = 'https://' + url  # Ensure HTTPS
+                        config['server_url'] = DEFAULT_SERVER_URL
+                    elif not url.startswith(('ws://', 'wss://')):
+                        url = 'ws://' + url
+                        config['server_url'] = url
                 logger.info(f"Loaded config from file: {config}")
                 return config
         except Exception as e:
@@ -84,176 +100,173 @@ def save_config(config):
         logger.error(f"Error saving config: {e}")
         return False
 
-def test_api_key():
-    """Test function to check the API key"""
-    config = load_config()
-    api_key = config.get('api_key', DEFAULT_API_KEY)
-    logger.info(f"Current API key: {api_key}")
-    logger.info(f"Default API key: {DEFAULT_API_KEY}")
-    logger.info(f"Environment API key: {os.environ.get('API_KEYS', 'Not set')}")
-    return api_key
-
-# Check for required packages
-try:
-    import socketio
-except ImportError:
-    print("Error: python-socketio package is not installed.")
-    print("Please install it with: pip install python-socketio")
-    sys.exit(1)
-
-try:
-    import requests
-except ImportError:
-    print("Error: requests package is not installed.")
-    print("Please install it with: pip install requests")
-    sys.exit(1)
-
-try:
-    from pythonosc import udp_client
-except ImportError:
-    print("Error: python-osc package is not installed.")
-    print("Please install it with: pip install python-osc")
-    sys.exit(1)
-
-# Try to import PySide6 for GUI
-try:
-    from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, 
-                                 QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, 
-                                 QDialog, QDialogButtonBox, QStyle)
-    from PySide6.QtCore import Qt, Signal, QObject, QSettings, QPoint, QSize
-    from PySide6.QtGui import QColor, QPainter
-except ImportError:
-    PySide6 = None
-else:
-    PySide6 = True
-
-# Ensure logs directory exists
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
-os.makedirs(LOG_DIR, exist_ok=True)
-log_filename = os.path.join(LOG_DIR, f'osc_relay_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(log_filename)
+        logging.FileHandler(os.path.join(CONFIG_DIR, f'osc_relay_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'))
     ]
 )
 logger = logging.getLogger(__name__)
 
-class OSCRelayClient:
-    def __init__(self, server_url, api_key, osc_port=57120):
-        self.server_url = server_url
-        self.api_key = api_key
-        self.osc_port = osc_port
-        self.websocket = None
-        self.connected = False
-        self.receiver_id = None
-        self.osc_client = udp_client.SimpleUDPClient("127.0.0.1", self.osc_port)
-        self.message_queue = []
-        self.is_sending = False
-        self.send_thread = None
+class MessageSignal(QObject):
+    """Signal class for thread-safe GUI updates"""
+    message_received = Signal(str)
+    status_updated = Signal(str, bool)
 
-    async def connect(self):
+class OSCRelayClient:
+    def __init__(self, server_url, osc_port=57120):
+        self.config = load_config()
+        self.server_url = server_url or self.config.get('server_url', DEFAULT_SERVER_URL)
+        self.osc_port = osc_port or self.config.get('local_port', DEFAULT_LOCAL_PORT)
+        self.local_ip = self.config.get('local_ip', '127.0.0.1')
+        self.client_name = self.config.get('client_name', socket.gethostname())
+        
+        logger.debug(f"Client configuration: server_url={self.server_url}, local_ip={self.local_ip}, osc_port={self.osc_port}")
+        
+        self.ws = None
+        self.connected = False
+        self.osc_client = None
+        self.was_manually_disconnected = False
+        self.connection_monitor_thread = None
+        self.message_signal = MessageSignal()
+
+    def on_message(self, ws, message):
+        """Handle incoming messages"""
         try:
-            self.websocket = await websockets.connect(self.server_url)
-            self.connected = True
+            data = json.loads(message)
+            if 'address' in data and 'value' in data:
+                # Forward to local OSC client
+                if self.osc_client:
+                    try:
+                        # Format message with timestamp
+                        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        message_text = f"[{timestamp}] {data['address']} = {data['value']:.3f}"
+                        
+                        # Log to console
+                        logger.info(message_text)
+                        
+                        # Forward to local OSC client
+                        self.osc_client.send_message(data['address'], data['value'])
+                        
+                        # Update GUI if available
+                        if hasattr(self, 'window') and self.window:
+                            self.message_signal.message_received.emit(message_text)
+                    except Exception as e:
+                        logger.error(f"Error forwarding to local client: {e}")
+            elif data.get('type') == 'auth_ok':
+                logger.info(f"Connected to server: {data['message']}")
+                self.connected = True
+                # Update GUI status
+                if hasattr(self, 'window') and self.window:
+                    self.message_signal.status_updated.emit(f"Connected - {data['message']}", True)
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+
+    def on_error(self, ws, error):
+        """Handle errors"""
+        logger.error(f"WebSocket error: {error}")
+        self.connected = False
+        if hasattr(self, 'window') and self.window:
+            self.message_signal.status_updated.emit(f"Error: {error}", False)
+
+    def on_close(self, ws, close_status_code, close_msg):
+        """Handle connection close"""
+        logger.info("Disconnected from server")
+        self.connected = False
+        if hasattr(self, 'window') and self.window:
+            self.message_signal.status_updated.emit("Disconnected", False)
+
+    def on_open(self, ws):
+        """Handle connection open"""
+        logger.info("Connected to server")
+        # Send simple auth message
+        ws.send(json.dumps({
+            'type': 'auth',
+            'name': self.client_name
+        }))
+
+    def start(self):
+        """Start the client and connect to the server"""
+        try:
+            # Initialize OSC client
+            try:
+                self.osc_client = udp_client.SimpleUDPClient(self.local_ip, self.osc_port)
+                logger.info(f"Initialized OSC client for {self.local_ip}:{self.osc_port}")
+            except Exception as e:
+                logger.error(f"Failed to initialize OSC client: {e}")
+                return False
             
-            # Send authentication
-            await self.websocket.send(json.dumps({
-                'type': 'auth',
-                'api_key': self.api_key
-            }))
+            # Ensure the URL starts with ws:// or wss://
+            if not self.server_url.startswith(('ws://', 'wss://')):
+                self.server_url = f"ws://{self.server_url}"
             
-            # Start message handling
-            asyncio.create_task(self.handle_messages())
+            logger.debug(f"Connecting to {self.server_url}")
             
-            logger.info("Connected to server")
+            # Create WebSocket connection
+            websocket.enableTrace(True)
+            self.ws = websocket.WebSocketApp(
+                self.server_url,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                on_open=self.on_open
+            )
+            
+            # Start connection in a separate thread
+            self.connection_monitor_thread = threading.Thread(target=self._monitor_connection)
+            self.connection_monitor_thread.daemon = True
+            self.connection_monitor_thread.start()
+            
             return True
         except Exception as e:
-            logger.error(f"Connection error: {e}")
-            self.connected = False
+            logger.error(f"Error starting client: {e}")
             return False
 
-    async def handle_messages(self):
-        try:
-            async for message in self.websocket:
-                data = json.loads(message)
-                
-                if data['type'] == 'error':
-                    logger.error(f"Server error: {data.get('message')}")
-                    
-                elif data['type'] == 'status':
-                    logger.info(f"Status update: {data.get('message')}")
-                    self.is_sending = data.get('is_sending', False)
-                    
-                elif data['type'] == 'registration_confirmed':
-                    self.receiver_id = data.get('receiver_id')
-                    logger.info(f"Registered as receiver: {self.receiver_id}")
-                    
-                elif data['type'] == 'osc':
-                    address = data.get('address')
-                    value = data.get('value')
-                    if address and value is not None:
-                        self.osc_client.send_message(address, value)
-                        
-                elif data['type'] == 'client_list_update':
-                    logger.info(f"Connected clients: {data.get('clients', [])}")
-                    
-                elif data['type'] == 'receiver_list_update':
-                    logger.info(f"Registered receivers: {data.get('receivers', [])}")
-                    
-        except Exception as e:
-            logger.error(f"Message handling error: {e}")
-            self.connected = False
-            await self.reconnect()
-
-    async def reconnect(self):
-        while not self.connected:
+    def _monitor_connection(self):
+        """Monitor the connection and attempt to reconnect if needed"""
+        while True:
             try:
-                logger.info("Attempting to reconnect...")
-                if await self.connect():
-                    break
-                await asyncio.sleep(5)
+                if not self.connected and not self.was_manually_disconnected:
+                    logger.warning("Connection lost, attempting to reconnect...")
+                    try:
+                        self.ws.run_forever()
+                    except Exception as e:
+                        logger.error(f"Error during reconnection: {e}")
+                time.sleep(1)
             except Exception as e:
-                logger.error(f"Reconnection error: {e}")
-                await asyncio.sleep(5)
+                logger.error(f"Error in connection monitor: {e}")
+                time.sleep(5)
 
-    async def register_receiver(self, name="Unnamed Receiver"):
-        if self.connected:
-            await self.websocket.send(json.dumps({
-                'type': 'register',
-                'name': name
-            }))
-
-    async def send_osc_message(self, address, value):
-        if self.connected:
-            await self.websocket.send(json.dumps({
-                'type': 'osc',
-                'address': address,
-                'value': value
-            }))
-
-    async def start_sending(self):
-        if self.connected:
-            await self.websocket.send(json.dumps({
-                'type': 'start_sending'
-            }))
-
-    async def stop_sending(self):
-        if self.connected:
-            await self.websocket.send(json.dumps({
-                'type': 'stop_sending'
-            }))
-
-    async def close(self):
-        if self.websocket:
-            await self.websocket.close()
+    def stop(self):
+        """Stop the client connection"""
+        self.was_manually_disconnected = True
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception as e:
+                logger.error(f"Error disconnecting: {e}")
         self.connected = False
+        
+        # Clean up OSC client
+        if self.osc_client:
+            try:
+                self.osc_client = None
+            except Exception as e:
+                logger.error(f"Error cleaning up OSC client: {e}")
 
 # PySide6 GUI
+try:
+    from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton, 
+                                 QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, 
+                                 QDialog, QDialogButtonBox, QStyle)
+    from PySide6.QtGui import QColor, QPainter
+    PySide6 = True
+except ImportError:
+    PySide6 = False
+
 if PySide6:
     class AboutDialog(QDialog):
         def __init__(self, parent=None):
@@ -309,7 +322,7 @@ if PySide6:
             self.setMinimumWidth(600)
             self.client = None
             self.settings = QSettings('Mass Experience', 'OSC Relay Client')
-            self.config = self.load_config()  # Load configuration from file
+            self.config = self.load_config()
             self.restore_settings()
             self.setup_ui()
 
@@ -323,18 +336,17 @@ if PySide6:
                         if 'server_url' in config:
                             url = config['server_url']
                             if 'YOUR_SERVER_IP' in url:
-                                config['server_url'] = 'https://massdev.one'
-                            elif not url.startswith(('http://', 'https://')):
-                                config['server_url'] = 'https://' + url
+                                config['server_url'] = DEFAULT_SERVER_URL
+                            elif not url.startswith(('ws://', 'wss://')):
+                                url = 'ws://' + url
+                                config['server_url'] = url
                         logger.info(f"Loaded config from file: {config}")
                         return config
             except Exception as e:
                 logger.error(f"Error loading config: {e}")
             
-            # Return default config if loading fails
             return {
-                'server_url': 'https://massdev.one',
-                'api_key': '',
+                'server_url': DEFAULT_SERVER_URL,
                 'receiver_name': 'default',
                 'local_ip': '127.0.0.1',
                 'local_port': 57120,
@@ -346,7 +358,6 @@ if PySide6:
             try:
                 # Update config with current values
                 self.config['server_url'] = self.server_url_input.text()
-                self.config['api_key'] = self.api_key_input.text()
                 self.config['client_name'] = self.name_input.text()
                 self.config['local_ip'] = self.local_ip_input.text()
                 self.config['local_port'] = int(self.local_port_input.text())
@@ -369,28 +380,12 @@ if PySide6:
             # Server URL input with status indicator
             server_layout = QHBoxLayout()
             server_layout.addWidget(QLabel('Server URL:'))
-            self.server_url_input = QLineEdit(self.config.get('server_url', 'https://massdev.one'))
+            self.server_url_input = QLineEdit(self.config.get('server_url', DEFAULT_SERVER_URL))
             self.server_url_input.setToolTip("The URL of the OSC Relay Server")
             server_layout.addWidget(self.server_url_input)
             self.status_indicator = StatusIndicator()
             server_layout.addWidget(self.status_indicator)
             layout.addLayout(server_layout)
-
-            # API Key input
-            api_key_layout = QHBoxLayout()
-            api_key_layout.addWidget(QLabel('API Key:'))
-            self.api_key_input = QLineEdit(self.config.get('api_key', DEFAULT_API_KEY))
-            self.api_key_input.setToolTip("API key for authentication with the server")
-            self.api_key_input.setEchoMode(QLineEdit.Password)
-            api_key_layout.addWidget(self.api_key_input)
-            
-            # Add Test API Key button
-            test_api_btn = QPushButton("Test")
-            test_api_btn.setToolTip("Test the API key")
-            test_api_btn.clicked.connect(self.test_api_key)
-            api_key_layout.addWidget(test_api_btn)
-            
-            layout.addLayout(api_key_layout)
 
             # Name input
             name_layout = QHBoxLayout()
@@ -482,16 +477,7 @@ if PySide6:
 
         def save_settings(self):
             self.settings.setValue('geometry', self.geometry())
-            
-            # Update config with current values
-            self.config['server_url'] = self.server_url_input.text()
-            self.config['api_key'] = self.api_key_input.text()
-            self.config['client_name'] = self.name_input.text()
-            self.config['local_ip'] = self.local_ip_input.text()
-            self.config['local_port'] = int(self.local_port_input.text())
-            
-            # Save config to file
-            save_config(self.config)
+            self.save_config()
 
         def closeEvent(self, event):
             self.save_settings()
@@ -511,6 +497,7 @@ if PySide6:
                 self.status_label.setText(f"Status: Test failed - {str(e)}")
 
         def update_status(self, status):
+            """Update the status display in the GUI"""
             self.status_label.setText(f'Status: {status}')
             # Check for various connected states
             is_connected = any(state in status.lower() for state in [
@@ -519,10 +506,45 @@ if PySide6:
                 'running'
             ])
             self.status_indicator.set_status(is_connected)
+            
+            # Update button states based on connection status
+            if 'connected' in status.lower():
+                self.start_button.setEnabled(True)
+                self.stop_button.setEnabled(False)
+                self.server_url_input.setEnabled(False)
+                self.name_input.setEnabled(False)
+                self.local_ip_input.setEnabled(False)
+                self.local_port_input.setEnabled(False)
+            elif 'disconnected' in status.lower():
+                self.start_button.setEnabled(True)
+                self.stop_button.setEnabled(False)
+                self.server_url_input.setEnabled(True)
+                self.name_input.setEnabled(True)
+                self.local_ip_input.setEnabled(True)
+                self.local_port_input.setEnabled(True)
 
         def add_message(self, msg):
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.messages.append(f"[{timestamp}] {msg}")
+            """Add a message to the log"""
+            try:
+                logger.debug(f"[GUI] Received message to add: {msg}")
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                formatted_msg = f"[{timestamp}] {msg}"
+                logger.debug(f"[GUI] Formatted message: {formatted_msg}")
+                
+                # Use append to add text
+                self.messages.append(formatted_msg)
+                logger.debug(f"[GUI] Message appended to QTextEdit: {formatted_msg}")
+                
+                # Scroll to bottom
+                self.messages.verticalScrollBar().setValue(
+                    self.messages.verticalScrollBar().maximum()
+                )
+                logger.debug("[GUI] Scrolled to bottom of message panel")
+                
+            except Exception as e:
+                error_msg = f"Error adding message to panel: {e}"
+                logger.error(f"[GUI] {error_msg}")
+                self.status_label.setText(error_msg)
 
         def show_about(self):
             dialog = AboutDialog(self)
@@ -531,38 +553,51 @@ if PySide6:
         def start_client(self):
             """Start the OSC relay client"""
             try:
+                logger.info("[GUI] Starting client...")
+                
                 # Save current configuration
                 if not self.save_config():
-                    self.status_label.setText("Error: Failed to save configuration")
+                    error_msg = "Error: Failed to save configuration"
+                    logger.error(f"[GUI] {error_msg}")
+                    self.status_label.setText(error_msg)
                     return
                 
                 # Create client with current config
-                self.client = OSCRelayClient(self.server_url_input.text(), self.api_key_input.text(), int(self.local_port_input.text()))
+                logger.info("[GUI] Creating OSCRelayClient instance")
+                self.client = OSCRelayClient(
+                    self.server_url_input.text(),
+                    int(self.local_port_input.text())
+                )
+                
+                # Pass window reference to client
+                self.client.window = self
                 
                 # Connect signals
-                self.client.status_signal.connect(self.update_status)
-                self.client.message_signal.connect(self.add_message)
+                self.client.message_signal.message_received.connect(self.handle_message)
+                self.client.message_signal.status_updated.connect(self.handle_status)
                 
                 # Start client
-                self.client.start()
+                if not self.client.start():
+                    raise Exception("Failed to start client")
+                
+                logger.info("[GUI] Client started successfully")
                 
                 # Update UI
                 self.start_button.setEnabled(False)
                 self.stop_button.setEnabled(True)
                 self.server_url_input.setEnabled(False)
-                self.api_key_input.setEnabled(False)
                 self.name_input.setEnabled(False)
                 self.local_ip_input.setEnabled(False)
                 self.local_port_input.setEnabled(False)
                 
             except Exception as e:
-                logger.error(f"Error starting client: {e}")
-                self.status_label.setText(f"Error: {str(e)}")
+                error_msg = f"Error starting client: {e}"
+                logger.error(f"[GUI] {error_msg}")
+                self.status_label.setText(error_msg)
                 # Reset UI if start failed
                 self.start_button.setEnabled(True)
                 self.stop_button.setEnabled(False)
                 self.server_url_input.setEnabled(True)
-                self.api_key_input.setEnabled(True)
                 self.name_input.setEnabled(True)
                 self.local_ip_input.setEnabled(True)
                 self.local_port_input.setEnabled(True)
@@ -575,10 +610,7 @@ if PySide6:
                     self.client.was_manually_disconnected = True
                     # Stop the client
                     self.client.stop()
-                    # Wait for client to stop
-                    if self.client.thread and self.client.thread.is_alive():
-                        self.client.thread.join(timeout=5)
-                    self.client = None
+                    
                 except Exception as e:
                     logger.error(f"Error stopping client: {e}")
                     self.status_label.setText(f"Error stopping client: {str(e)}")
@@ -587,96 +619,30 @@ if PySide6:
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.server_url_input.setEnabled(True)
-            self.api_key_input.setEnabled(True)
             self.name_input.setEnabled(True)
             self.local_ip_input.setEnabled(True)
             self.local_port_input.setEnabled(True)
             self.status_label.setText('Status: Stopped')
+            self.status_indicator.set_status(False)
 
-        def test_api_key(self):
-            """Test the API key"""
-            api_key = self.api_key_input.text().strip() or DEFAULT_API_KEY
-            server_url = self.server_url_input.text().strip()
-            
-            if not server_url.startswith('http://') and not server_url.startswith('https://'):
-                server_url = 'http://' + server_url
-            
-            # Test the API key by making a request to the server
-            try:
-                test_url = f"{server_url}/api/test_keys"
-                logger.info(f"Testing API key by making a request to {test_url}")
-                
-                # First, check what API keys the server has
-                response = requests.get(test_url)
-                if response.status_code == 200:
-                    server_keys = response.json()
-                    logger.info(f"Server API keys: {server_keys}")
-                    self.status_label.setText(f"Server API keys: {server_keys}")
-                else:
-                    logger.error(f"Failed to get server API keys: {response.status_code}")
-                    self.status_label.setText(f"Failed to get server API keys: {response.status_code}")
-                
-                # Now test the API key
-                test_url = f"{server_url}/api/status?api_key={api_key}"
-                logger.info(f"Testing API key by making a request to {test_url}")
-                response = requests.get(test_url)
-                
-                if response.status_code == 200:
-                    logger.info(f"API key is valid for HTTP: {api_key}")
-                    self.status_label.setText(f"API key is valid for HTTP: {api_key}")
-                else:
-                    logger.error(f"API key is invalid for HTTP: {api_key}, status code: {response.status_code}")
-                    self.status_label.setText(f"API key is invalid for HTTP: {api_key}, status code: {response.status_code}")
-                
-                # Test socket.io connection
-                self.test_socket_connection(server_url, api_key)
-            except Exception as e:
-                logger.error(f"Error testing API key: {e}")
-                self.status_label.setText(f"Error testing API key: {e}")
-        
-        def test_socket_connection(self, server_url, api_key):
-            """Test socket.io connection with API key"""
-            try:
-                sio = socketio.Client()
-                
-                # Set up event handlers
-                @sio.event
-                def connect():
-                    logger.info("Socket.io connected successfully")
-                    self.status_label.setText("Socket.io connected successfully")
-                    sio.disconnect()
-                
-                @sio.event
-                def connect_error(data):
-                    logger.error(f"Socket.io connection error: {data}")
-                    self.status_label.setText(f"Socket.io connection error: {data}")
-                
-                # Connect with API key
-                auth_data = {}
-                if api_key and api_key.strip():
-                    auth_data = {'api_key': api_key}
-                
-                logger.info(f"Testing socket.io connection with auth data: {auth_data}")
-                sio.connect(server_url, auth=auth_data)
-                
-                # Wait for connection or error
-                time.sleep(2)
-                
-                if sio.connected:
-                    logger.info("Socket.io connection test successful")
-                    self.status_label.setText("Socket.io connection test successful")
-                else:
-                    logger.error("Socket.io connection test failed")
-                    self.status_label.setText("Socket.io connection test failed")
-            except Exception as e:
-                logger.error(f"Error testing socket.io connection: {e}")
-                self.status_label.setText(f"Error testing socket.io connection: {e}")
+        def handle_message(self, message):
+            current_text = self.messages.toPlainText()
+            if current_text:
+                message = f"{current_text}\n{message}"
+            self.messages.setPlainText(message)
+            # Keep only last 100 messages
+            lines = self.messages.toPlainText().split('\n')
+            if len(lines) > 100:
+                self.messages.setPlainText('\n'.join(lines[-100:]))
+
+        def handle_status(self, status, is_connected):
+            self.status_label.setText(f"Status: {status}")
+            self.status_indicator.set_status(is_connected)
 
 def main():
     parser = argparse.ArgumentParser(description='OSC Relay Client')
     parser.add_argument('--nogui', action='store_true', help='Run without GUI (CLI mode)')
     parser.add_argument('--server', help='WebSocket server URL')
-    parser.add_argument('--api-key', help='API key for authentication')
     parser.add_argument('--local-ip', help='Local OSC server IP to forward messages to')
     parser.add_argument('--local-port', type=int, help='Local OSC server port to forward messages to')
     parser.add_argument('--name', help='Receiver name')
@@ -689,7 +655,6 @@ def main():
     # Create config dictionary
     config = {
         'server_url': args.server or DEFAULT_SERVER_URL,
-        'api_key': args.api_key or DEFAULT_API_KEY,
         'receiver_name': args.name or socket.gethostname(),
         'local_ip': args.local_ip or '127.0.0.1',
         'local_port': args.local_port or DEFAULT_LOCAL_PORT
@@ -719,15 +684,18 @@ def main():
            (config['local_ip'] is not None and config['local_port'] is None):
             logger.error("Both --local-ip and --local-port must be specified for forwarding")
             sys.exit(1)
-        client = OSCRelayClient(config['server_url'], config['api_key'], config['local_port'])
-        client.status_signal.connect(lambda status: print(f"Status: {status}"))
-        client.message_signal.connect(lambda msg: print(f"Message: {msg}"))
-        asyncio.run(client.connect())
+        client = OSCRelayClient(
+            server_url=config['server_url'],
+            osc_port=config['local_port']
+        )
         try:
+            if not client.start():
+                logger.error("Failed to start client")
+                sys.exit(1)
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            asyncio.run(client.close())
+            client.stop()
             print("Shutting down...")
 
 if __name__ == "__main__":
