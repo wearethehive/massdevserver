@@ -132,38 +132,62 @@ class OSCRelayClient:
         self.was_manually_disconnected = False
         self.connection_monitor_thread = None
         self.message_signal = MessageSignal()
+        self.should_reconnect = True
+        self.reconnect_delay = 5
 
     def on_message(self, ws, message):
-        """Handle incoming messages"""
+        """Handle incoming WebSocket messages."""
         try:
             data = json.loads(message)
-            if 'address' in data and 'value' in data:
-                # Forward to local OSC client
-                if self.osc_client:
-                    try:
-                        # Format message with timestamp
-                        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        message_text = f"[{timestamp}] {data['address']} = {data['value']:.3f}"
-                        
-                        # Log to console
-                        logger.info(message_text)
-                        
-                        # Forward to local OSC client
-                        self.osc_client.send_message(data['address'], data['value'])
-                        
-                        # Update GUI if available
-                        if hasattr(self, 'window') and self.window:
-                            self.message_signal.message_received.emit(message_text)
-                    except Exception as e:
-                        logger.error(f"Error forwarding to local client: {e}")
-            elif data.get('type') == 'auth_ok':
-                logger.info(f"Connected to server: {data['message']}")
+            
+            # Handle disconnect request
+            if data.get('type') == 'disconnect_requested':
+                logger.info(f"Received disconnect request from server: {data.get('message')}")
+                self.should_reconnect = False
+                ws.close()
+                return
+
+            # Handle auth response
+            if data.get('type') == 'auth_ok':
+                logger.info(f"Connected to server: {data.get('message')}")
                 self.connected = True
-                # Update GUI status
                 if hasattr(self, 'window') and self.window:
-                    self.message_signal.status_updated.emit(f"Connected - {data['message']}", True)
+                    self.message_signal.status_updated.emit(f"Connected - {data.get('message')}", True)
+                return
+
+            # Handle OSC messages (both direct and wrapped)
+            if data.get('type') == 'osc_message':
+                # If message is wrapped in osc_message type
+                message_data = data.get('message', data)
+            else:
+                # If message is direct
+                message_data = data
+
+            # Process OSC message if it has the required fields
+            if 'address' in message_data and 'value' in message_data:
+                try:
+                    # Initialize OSC client if not already done
+                    if not self.osc_client:
+                        self.osc_client = udp_client.SimpleUDPClient(self.local_ip, self.osc_port)
+                        logger.info(f"Initialized OSC client for {self.local_ip}:{self.osc_port}")
+                    
+                    # Send the OSC message
+                    self.osc_client.send_message(message_data['address'], message_data['value'])
+                    
+                    # Format message with timestamp
+                    timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    message_text = f"[{timestamp}] {message_data['address']} = {message_data['value']:.3f}"
+                    
+                    # Log to console
+                    logger.info(message_text)
+                    
+                    # Update GUI if available
+                    if hasattr(self, 'window') and self.window:
+                        self.message_signal.message_received.emit(message_text)
+                except Exception as e:
+                    logger.error(f"Error sending OSC message: {e}")
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error handling message: {e}")
 
     def on_error(self, ws, error):
         """Handle errors"""
@@ -173,11 +197,14 @@ class OSCRelayClient:
             self.message_signal.status_updated.emit(f"Error: {error}", False)
 
     def on_close(self, ws, close_status_code, close_msg):
-        """Handle connection close"""
-        logger.info("Disconnected from server")
-        self.connected = False
-        if hasattr(self, 'window') and self.window:
-            self.message_signal.status_updated.emit("Disconnected", False)
+        """Handle WebSocket connection close."""
+        logger.info(f"WebSocket connection closed: {close_status_code} - {close_msg}")
+        if self.should_reconnect:
+            logger.info("Attempting to reconnect...")
+            time.sleep(self.reconnect_delay)
+            self.start()
+        else:
+            logger.info("Reconnection disabled - client was explicitly disconnected")
 
     def on_open(self, ws):
         """Handle connection open"""
@@ -189,8 +216,11 @@ class OSCRelayClient:
         }))
 
     def start(self):
-        """Start the client and connect to the server"""
+        """Start the WebSocket client."""
         try:
+            self.should_reconnect = True  # Reset reconnection flag when starting
+            websocket.enableTrace(False)
+            
             # Initialize OSC client
             try:
                 self.osc_client = udp_client.SimpleUDPClient(self.local_ip, self.osc_port)
@@ -203,22 +233,21 @@ class OSCRelayClient:
             if not self.server_url.startswith(('ws://', 'wss://')):
                 self.server_url = f"ws://{self.server_url}"
             
-            logger.debug(f"Connecting to {self.server_url}")
+            logger.info(f"Connecting to {self.server_url}")
             
             # Create WebSocket connection
-            websocket.enableTrace(True)
             self.ws = websocket.WebSocketApp(
                 self.server_url,
+                on_open=self.on_open,
                 on_message=self.on_message,
                 on_error=self.on_error,
-                on_close=self.on_close,
-                on_open=self.on_open
+                on_close=self.on_close
             )
             
             # Start connection in a separate thread
-            self.connection_monitor_thread = threading.Thread(target=self._monitor_connection)
-            self.connection_monitor_thread.daemon = True
-            self.connection_monitor_thread.start()
+            self.connection_thread = threading.Thread(target=self.ws.run_forever)
+            self.connection_thread.daemon = True
+            self.connection_thread.start()
             
             return True
         except Exception as e:
@@ -242,20 +271,19 @@ class OSCRelayClient:
 
     def stop(self):
         """Stop the client connection"""
-        self.was_manually_disconnected = True
-        if self.ws:
-            try:
+        try:
+            self.should_reconnect = False
+            if self.ws:
                 self.ws.close()
-            except Exception as e:
-                logger.error(f"Error disconnecting: {e}")
-        self.connected = False
-        
-        # Clean up OSC client
-        if self.osc_client:
-            try:
+            self.connected = False
+            
+            # Clean up OSC client
+            if self.osc_client:
                 self.osc_client = None
-            except Exception as e:
-                logger.error(f"Error cleaning up OSC client: {e}")
+            
+            logger.info("Client stopped")
+        except Exception as e:
+            logger.error(f"Error stopping client: {e}")
 
 # PySide6 GUI
 try:
